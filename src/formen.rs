@@ -60,14 +60,18 @@ pub fn nachricht(m: &Message) -> Value {
         }
     }
 
+    // Bei Kanalbeitraegen gibt es keinen einzelnen Absender. Telethon
+    // setzte dort den Kanal selbst ein, und die Oberflaeche zeigt diesen
+    // Namen an -- sonst stuende ueber jedem Beitrag nichts.
     match m.sender() {
         Some(s) => {
             v["sender_id"] = json!(s.id());
             v["sender_name"] = json!(vorname(&s));
         }
         None => {
-            v["sender_id"] = json!(0);
-            v["sender_name"] = json!("");
+            let c = m.chat();
+            v["sender_id"] = json!(c.id());
+            v["sender_name"] = json!(c.name());
         }
     }
     v
@@ -139,8 +143,13 @@ pub fn dialog(d: &Dialog) -> Value {
             v["title"] = json!(if voll.trim().is_empty() { "Unknown".into() } else { voll });
             v["status"] = json!(zustand(u));
         }
-        Chat::Group(_) => {
-            v["type"] = json!("group");
+        Chat::Group(g) => {
+            // Telethon unterscheidet nach dem TL-Typ: alles, was der
+            // Server als Channel fuehrt, heisst "channel" -- und
+            // Supergruppen sind Channels. Nur die alten kleinen Gruppen
+            // sind "group". grammers fasst beides unter Group zusammen,
+            // also wird hier wieder aufgetrennt.
+            v["type"] = json!(if g.is_megagroup() { "channel" } else { "group" });
             v["title"] = json!(chat.name());
             v["first_name"] = json!("");
             v["last_name"] = json!("");

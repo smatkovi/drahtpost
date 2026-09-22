@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+for p in $(ps -eo pid,args 2>/dev/null | grep '[/]opt/drahtpost/drahtpost' | awk '{print $1}'); do
+    kill "$p" 2>/dev/null || true
+done
+exit 0

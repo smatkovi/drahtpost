@@ -9,6 +9,7 @@ edition = "2021"
 # nicht.
 grammers-client = "0.7"
 grammers-session = "0.7"
+grammers-mtsender = "0.7"
 grammers-tl-types = "0.7"
 
 # Ein Faden genuegt. rt-multi-thread wuerde auf einem Cortex-A8 nur

@@ -1,0 +1,10 @@
+Package: drahtpost
+Version: @VERSION@
+Section: user/network
+Priority: optional
+Architecture: armel
+Maintainer: smatkovi <sebastian.matkovich@gmail.com>
+Description: Telegram-Daemon in Rust
+ Ersetzt telegram_daemon.py aus dem PyTeleGram-Paket: derselbe Socket,
+ dieselben Befehle, ein paar Megabyte statt 55. Die Anmeldung wird aus
+ der vorhandenen Telethon-Sitzung uebernommen.

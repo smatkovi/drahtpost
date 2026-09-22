@@ -18,10 +18,12 @@
 mod befehle;
 mod formen;
 mod sitzung;
+mod sperre;
 mod verzeichnis;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use grammers_client::{Client, Config, InitParams, Update};
 use serde_json::{json, Value};
@@ -60,29 +62,60 @@ async fn main() {
     }
 }
 
+/// Wie oft und wie lange grammers von sich aus neu verbindet.
+///
+/// Die Vorgabe ist NoReconnect -- ein einziger Abriss, und der Daemon
+/// redet nie wieder mit Telegram, waehrend er scheinbar weiterlaeuft.
+/// Auf diesem Geraet ist der Abriss der Normalfall: das icd2-Signal, auf
+/// das die Bruecke horcht, gibt es genau deshalb.
+static NEUVERBINDEN: grammers_mtsender::FixedReconnect = grammers_mtsender::FixedReconnect {
+    attempts: usize::MAX,
+    delay: Duration::from_secs(5),
+};
+
 async fn lauf() -> Result<(), String> {
     let daten = datenverzeichnis();
     std::fs::create_dir_all(daten.join("downloads")).ok();
     std::fs::create_dir_all(daten.join("cache/avatars")).ok();
 
-    // Erst die Sitzung: ohne sie waere jeder Start eine Neuanmeldung.
-    let sitzung = sitzung::vorbereiten(&daten)?;
+    // Vor allem anderen: nur eine Instanz.
+    sperre::nehmen(&daten)?;
+    protokoll_umlenken(&daten);
 
-    eprintln!("== verbinde");
-    let client = Client::connect(Config {
-        session: sitzung,
-        api_id: API_ID,
-        api_hash: API_HASH.to_string(),
-        params: InitParams {
-            // Updates nachholen, die waehrend des Ausschaltens anfielen --
-            // sonst fehlen genau die Nachrichten, die waehrend der Nacht
-            // kamen.
-            catch_up: true,
-            ..Default::default()
-        },
-    })
-    .await
-    .map_err(|e| format!("Verbindung: {e}"))?;
+    // Beim Einschalten ist das Netz oft noch nicht da. Aufgeben waere
+    // falsch -- die Bruecke wuerde das als gescheiterten Start sehen und
+    // beim naechsten Versuch einen zweiten Daemon starten.
+    let mut versuch = 0u32;
+    let client = loop {
+        versuch += 1;
+        eprintln!("== verbinde (Versuch {versuch})");
+        // Die Sitzung wird je Versuch neu geholt: Session ist nicht
+        // kopierbar, und beim ersten Mal steckt hier die Uebernahme aus
+        // Telethon. Danach wird sie nur noch geladen.
+        let sitzung = sitzung::vorbereiten(&daten)?;
+        let ergebnis = Client::connect(Config {
+            session: sitzung,
+            api_id: API_ID,
+            api_hash: API_HASH.to_string(),
+            params: InitParams {
+                // Updates nachholen, die waehrend des Ausschaltens
+                // anfielen -- sonst fehlen genau die Nachrichten, die
+                // ueber Nacht kamen.
+                catch_up: true,
+                reconnection_policy: &NEUVERBINDEN,
+                ..Default::default()
+            },
+        })
+        .await;
+        match ergebnis {
+            Ok(c) => break c,
+            Err(e) => {
+                eprintln!("⚠ Verbindung: {e}");
+                let warten = std::cmp::min(60, 5 * versuch) as u64;
+                tokio::time::sleep(Duration::from_secs(warten)).await;
+            }
+        }
+    };
 
     let angemeldet = client.is_authorized().await.unwrap_or(false);
     eprintln!("== angemeldet: {angemeldet}");
@@ -109,7 +142,26 @@ async fn lauf() -> Result<(), String> {
 
     // Ereignisse gehen an alle offenen Verbindungen -- die Oberflaeche
     // und die Bruecke haengen gleichzeitig dran.
-    let (ruf, _) = broadcast::channel::<String>(64);
+    let (ruf, _) = broadcast::channel::<String>(256);
+
+    // Die Sitzung regelmaessig auf die Platte.
+    //
+    // grammers sichert nichts von selbst -- Telethon schrieb seine
+    // SQLite-Datei laufend mit. Ohne das hier ginge nach jedem Start der
+    // Stand der Updates verloren (catch_up waere wirkungslos), und die
+    // Schluessel, die fuer Downloads mit anderen Rechenzentren
+    // ausgehandelt werden, muessten jedes Mal neu ausgehandelt werden.
+    {
+        let client = client.clone();
+        let pfad = daten.join("grammers.session");
+        tokio::spawn(async move {
+            let mut takt = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                takt.tick().await;
+                let _ = client.session().save_to_file(&pfad);
+            }
+        });
+    }
 
     // Updates einsammeln.
     {
@@ -156,10 +208,23 @@ async fn lauf() -> Result<(), String> {
             // Ereignisse nebenher hinausschieben.
             let s = schreiben.clone();
             let ausgabe = tokio::spawn(async move {
-                while let Ok(zeile) = ereignisse.recv().await {
-                    let mut w = s.lock().await;
-                    if w.write_all(zeile.as_bytes()).await.is_err() {
-                        break;
+                loop {
+                    match ereignisse.recv().await {
+                        Ok(zeile) => {
+                            let mut w = s.lock().await;
+                            if w.write_all(zeile.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                        // Ein Schwall -- etwa beim Nachholen nach der
+                        // Nacht -- laesst den Empfaenger zurueckfallen.
+                        // Das ist kein Grund, den Ereignisstrom dieser
+                        // Verbindung fuer immer zu schliessen; genau das
+                        // taete ein `while let Ok(..)`.
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            eprintln!("⚠ {n} Ereignisse uebersprungen");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
             });
@@ -181,6 +246,33 @@ async fn lauf() -> Result<(), String> {
             }
             ausgabe.abort();
         });
+    }
+}
+
+/// Die Bruecke startet Drahtpost mit geschlossener Fehlerausgabe. Damit
+/// im Fehlerfall trotzdem etwas nachzulesen ist, geht sie in eine Datei
+/// neben der Sitzung -- nicht nach /tmp: das ist hier ein tmpfs mit 4 MB,
+/// und ein volles /tmp legt mehr lahm als ein fehlendes Protokoll.
+fn protokoll_umlenken(daten: &std::path::Path) {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn isatty(fd: i32) -> i32;
+        fn dup2(alt: i32, neu: i32) -> i32;
+    }
+    if unsafe { isatty(2) } == 1 {
+        return; // Von Hand gestartet: auf dem Bildschirm ist es besser aufgehoben.
+    }
+    let pfad = daten.join("drahtpost.log");
+    // Nicht anwachsen lassen.
+    if std::fs::metadata(&pfad).map(|m| m.len() > 512 * 1024).unwrap_or(false) {
+        let _ = std::fs::rename(&pfad, daten.join("drahtpost.log.alt"));
+    }
+    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&pfad) {
+        unsafe {
+            dup2(f.as_raw_fd(), 1);
+            dup2(f.as_raw_fd(), 2);
+        }
+        std::mem::forget(f);
     }
 }
 

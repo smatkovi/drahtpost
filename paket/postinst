@@ -1,0 +1,14 @@
+#!/bin/sh
+# Kein Zwang und kein Loeschen: der Python-Daemon bleibt liegen, samt
+# seiner Sitzung. Wer zurueck will, beendet Drahtpost und startet ihn.
+set -e
+
+# Laeuft noch ein Python-Daemon, haelt er den Socket. Er wird beendet --
+# aber gezielt, nicht mit einem pkill auf "python": auf diesem Geraet
+# haengen daran auch Matrix und die Oberflaeche.
+for p in $(ps -eo pid,args 2>/dev/null | grep '[t]elegram_daemon.py' | awk '{print $1}'); do
+    echo "beende Python-Daemon $p"
+    kill "$p" 2>/dev/null || true
+done
+
+exit 0

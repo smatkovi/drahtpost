@@ -113,10 +113,14 @@ fn uebernehmen(telethon: &Path) -> Result<Session, String> {
 /// Nach einem erfolgreichen get_me: die eigene Kennung festschreiben.
 pub fn benutzer_festhalten(client: &grammers_client::Client, daten: &Path, kennung: i64, dc: i32) {
     let s = client.session();
-    if s.get_user().map(|u| u.id) == Some(kennung) {
-        return;
-    }
     s.set_user(kennung, dc, false);
+    // Immer schreiben, auch wenn die Kennung schon stimmte: nach einer
+    // frischen Anmeldung steckt der neu ausgehandelte Schluessel in
+    // derselben Sitzung, und ohne dieses Sichern waere er beim naechsten
+    // Start weg -- der Benutzer muesste sich wieder anmelden.
     let eigen = daten.join("grammers.session");
-    let _ = s.save_to_file(&eigen);
+    let _ = std::fs::OpenOptions::new().create(true).write(true).open(&eigen);
+    if let Err(e) = s.save_to_file(&eigen) {
+        eprintln!("⚠ Sitzung nicht gesichert: {e}");
+    }
 }
