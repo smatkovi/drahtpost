@@ -1,0 +1,29 @@
+[package]
+name = "drahtpost"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Reines Rust-MTProto. Kein TDLib, kein C++: das ist der Grund, warum
+# dieses Programm in ein paar Megabyte passt und der Python-Daemon
+# nicht.
+grammers-client = "0.7"
+grammers-session = "0.7"
+grammers-tl-types = "0.7"
+
+# Ein Faden genuegt. rt-multi-thread wuerde auf einem Cortex-A8 nur
+# Stapel kosten.
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "time", "sync", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Nur, um den Telethon-Schluessel einmal zu uebernehmen: seine Sitzung
+# ist eine SQLite-Datei. Danach ruehrt der Daemon sie nie wieder an.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
