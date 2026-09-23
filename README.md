@@ -34,6 +34,22 @@ Baut auf einem Fremdrechner gegen `armv7-unknown-linux-musleabi`,
 vollständig statisch. Warum musl und nicht glibc, und warum `rust-lld`:
 siehe `tools/cross.env`.
 
+## Stummgeschaltete Chats
+
+Telegram führt die Stummschaltung am Dialog: in `notify_settings` steht
+ein `mute_until`, für „auf immer“ 2147483647. Drahtpost merkt sich diesen
+Zeitpunkt je Chat in `~/.pytelegram/stumm.json` — gemerkt wird der
+Zeitpunkt und kein Ja/Nein, damit „acht Stunden stumm“ von selbst
+abläuft. Gefüllt wird die Tabelle aus einem vollständigen Dialogdurchlauf
+und danach laufend aus `updateNotifySettings`.
+
+`new_message` und `message_edited` tragen deshalb zwei Felder, die der
+Python-Daemon nicht hatte: `muted` und `mentioned`. Die
+[Nachrichtenbrücke](https://github.com/smatkovi/nachrichtenbruecke) hält
+damit stumme Chats aus der Nachrichten-App; Erwähnungen und Antworten an
+einen selbst kommen weiter durch. Die Oberfläche von PyTeleGram liest die
+Felder nicht und bekommt unverändert alles.
+
 ## Was fehlt
 
 Sprach- und Videoanrufe. Telegram trennt das sauber — TDLib beziehungs-

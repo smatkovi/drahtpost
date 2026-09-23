@@ -176,6 +176,30 @@ async fn lauf() -> Result<(), String> {
         let lage = lage.clone();
         let ruf = ruf.clone();
         tokio::spawn(async move {
+            // Vorher einmal die Dialoge, wenn Verzeichnis oder
+            // Stummliste fehlen -- und zwar hier, vor dem ersten
+            // next_update: mit catch_up liegt der Schwall der Nacht
+            // schon bereit, und ohne die Stummliste ginge genau er
+            // ungefiltert in die Nachrichten-App. Was waehrend des
+            // Durchlaufs hereinkommt, haelt grammers so lange fest.
+            //
+            // Ohne Grenze: die Dialoge sind nach dem letzten Beitrag
+            // sortiert, und eine stummgeschaltete Gruppe, in der lange
+            // nichts geschah, steht weit hinten. Mit einer Grenze von
+            // 400 fehlte gerade sie in der Tabelle -- und sie ist der
+            // Fall, um den es geht.
+            //
+            // Die Zeitgrenze ist die Notbremse: ohne Netz darf der
+            // Durchlauf den Updatestrom nicht auf Dauer anhalten.
+            if angemeldet && (lage.verzeichnis.leer() || !lage.stumm.bekannt()) {
+                eprintln!("== Verzeichnis oder Stummliste fehlt, hole alle Dialoge");
+                let fuellen = befehle::dialoge_holen(&lage, usize::MAX, 0);
+                match tokio::time::timeout(Duration::from_secs(300), fuellen).await {
+                    Ok(Ok(liste)) => eprintln!("== {} Dialoge gelesen", liste.len()),
+                    Ok(Err(e)) => eprintln!("⚠ Dialoge: {e}"),
+                    Err(_) => eprintln!("⚠ Dialoge: zu lange, weiter ohne"),
+                }
+            }
             loop {
                 match lage.client.next_update().await {
                     Ok(u) => {
@@ -192,24 +216,9 @@ async fn lauf() -> Result<(), String> {
         });
     }
 
-    // Das Verzeichnis einmal auffrischen, damit send_message auch dann
-    // einen Chat findet, wenn die Oberflaeche noch keine Dialoge geholt
-    // hat. Im Hintergrund: es darf den Start nicht aufhalten.
-    //
-    // Dasselbe gilt fuer die Stummschaltungen: ohne sie wuesste der
-    // Daemon bei einem frisch installierten Drahtpost nicht, welche
-    // Gruppen der Benutzer stumm gestellt hat, und die Bruecke bekaeme
-    // sie alle. Ein volles Verzeichnis heisst dabei nicht, dass auch die
-    // Stummliste steht -- sie ist neuer als das Verzeichnis.
-    if angemeldet {
-        let lage = lage.clone();
-        tokio::spawn(async move {
-            if lage.verzeichnis.leer() || !lage.stumm.bekannt() {
-                eprintln!("== Verzeichnis oder Stummliste fehlt, hole Dialoge");
-                let _ = befehle::dialoge_holen(&lage, 400, 0).await;
-            }
-        });
-    }
+    // Der Dialogdurchlauf, der das Verzeichnis und die Stummliste fuellt,
+    // steht oben im Updatelauf -- er muss vor dem ersten Update fertig
+    // sein. Befehle ueber den Socket beantwortet der Daemon waehrenddessen.
 
     loop {
         let (strom, _) = horcher.accept().await.map_err(|e| format!("accept: {e}"))?;
