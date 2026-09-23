@@ -19,6 +19,7 @@ mod befehle;
 mod formen;
 mod sitzung;
 mod sperre;
+mod stumm;
 mod verzeichnis;
 
 use std::path::PathBuf;
@@ -26,11 +27,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use grammers_client::{Client, Config, InitParams, Update};
+use grammers_tl_types as tl;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, Mutex};
 
+use stumm::Stummliste;
 use verzeichnis::Verzeichnis;
 
 /// Die oeffentlichen Zugangsdaten von Telegram Desktop -- dieselben, die
@@ -48,6 +51,10 @@ pub fn datenverzeichnis() -> PathBuf {
 pub struct Lage {
     pub client: Client,
     pub verzeichnis: Verzeichnis,
+    /// Welche Chats stummgeschaltet sind. Ihre Nachrichten gehen
+    /// weiterhin an die Oberflaeche, aber mit einer Marke, an der die
+    /// Bruecke sie erkennt und aus der Nachrichten-App haelt.
+    pub stumm: Stummliste,
     /// Zwischen send_phone und send_code liegt ein Token, das der Server
     /// vergeben hat. Ohne es ist der Code wertlos.
     pub anmeldung: Mutex<sitzung::Anmeldung>,
@@ -122,6 +129,7 @@ async fn lauf() -> Result<(), String> {
 
     let lage = Arc::new(Lage {
         verzeichnis: Verzeichnis::laden(&daten),
+        stumm: Stummliste::laden(&daten),
         anmeldung: Mutex::new(sitzung::Anmeldung::neu(angemeldet)),
         einstellungen: Mutex::new(befehle::einstellungen_laden(&daten)),
         client: client.clone(),
@@ -187,11 +195,17 @@ async fn lauf() -> Result<(), String> {
     // Das Verzeichnis einmal auffrischen, damit send_message auch dann
     // einen Chat findet, wenn die Oberflaeche noch keine Dialoge geholt
     // hat. Im Hintergrund: es darf den Start nicht aufhalten.
+    //
+    // Dasselbe gilt fuer die Stummschaltungen: ohne sie wuesste der
+    // Daemon bei einem frisch installierten Drahtpost nicht, welche
+    // Gruppen der Benutzer stumm gestellt hat, und die Bruecke bekaeme
+    // sie alle. Ein volles Verzeichnis heisst dabei nicht, dass auch die
+    // Stummliste steht -- sie ist neuer als das Verzeichnis.
     if angemeldet {
         let lage = lage.clone();
         tokio::spawn(async move {
-            if lage.verzeichnis.leer() {
-                eprintln!("== Verzeichnis ist leer, hole Dialoge");
+            if lage.verzeichnis.leer() || !lage.stumm.bekannt() {
+                eprintln!("== Verzeichnis oder Stummliste fehlt, hole Dialoge");
                 let _ = befehle::dialoge_holen(&lage, 400, 0).await;
             }
         });
@@ -294,14 +308,14 @@ async fn ereignis_zeilen(lage: &Arc<Lage>, u: Update) -> Vec<String> {
             }
             aus.push(zeile(json!({
                 "event": "new_message",
-                "data": formen::nachricht(&m),
+                "data": gemerkt(lage, &m),
             })));
         }
         Update::MessageEdited(m) => {
             lage.verzeichnis.merken(&m.chat().pack());
             aus.push(zeile(json!({
                 "event": "message_edited",
-                "data": formen::nachricht(&m),
+                "data": gemerkt(lage, &m),
             })));
         }
         Update::MessageDeleted(d) => {
@@ -310,9 +324,46 @@ async fn ereignis_zeilen(lage: &Arc<Lage>, u: Update) -> Vec<String> {
                 "data": {"ids": d.messages()},
             })));
         }
+        // Stummschalten und wieder lautstellen kommt als rohes Update
+        // herein -- grammers hat dafuer keine eigene Spielart. Ohne das
+        // hier waere die Tabelle so alt wie der letzte Dialogdurchlauf,
+        // und eine gerade stummgeschaltete Gruppe laendete den ganzen Tag
+        // weiter in der Nachrichten-App.
+        Update::Raw(tl::enums::Update::NotifySettings(u)) => {
+            let bis = stumm::bis_aus_einstellungen(&u.notify_settings);
+            match &u.peer {
+                tl::enums::NotifyPeer::Peer(p) => {
+                    let kennung = stumm::kennung_aus_peer(&p.peer);
+                    eprintln!("== stumm {kennung} bis {bis}");
+                    lage.stumm.setzen(kennung, bis);
+                    lage.stumm.sichern();
+                }
+                // notifyUsers/notifyChats/notifyBroadcasts sind die
+                // Voreinstellung einer ganzen Gattung. Die Dialoge, die
+                // ihr folgen, tragen selbst kein mute_until -- das waere
+                // ein eigener Weg, und bis dahin bleibt es beim
+                // Einzelstand.
+                andere => eprintln!("== Benachrichtigungen fuer {andere:?} geaendert"),
+            }
+        }
         _ => {}
     }
     aus
+}
+
+/// Die Nachricht in ihrer ueberlieferten Form, dazu zwei Felder, die der
+/// Python-Daemon nicht hatte: ob der Chat stumm ist und ob der Benutzer
+/// darin erwaehnt wird. Die Bruecke entscheidet damit, ob die Nachricht
+/// in die Nachrichten-App gehoert; die Oberflaeche von PyTeleGram liest
+/// unbekannte Felder nicht und bekommt weiterhin alles.
+fn gemerkt(lage: &Arc<Lage>, m: &grammers_client::types::Message) -> Value {
+    let mut v = formen::nachricht(m);
+    let kennung = verzeichnis::markiert(&m.chat().pack());
+    v["muted"] = json!(lage.stumm.stumm(kennung));
+    // In einer stummen Gruppe meldet Telegram trotzdem, wenn man selbst
+    // gemeint ist -- Erwaehnung oder Antwort auf die eigene Nachricht.
+    v["mentioned"] = json!(m.mentioned());
+    v
 }
 
 fn zeile(v: Value) -> String {

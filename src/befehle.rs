@@ -44,6 +44,7 @@ pub async fn behandeln(lage: &Arc<Lage>, frage: &Value) -> Value {
 
     // Was sich unterwegs an Chats angesammelt hat, kommt auf die Platte.
     lage.verzeichnis.sichern();
+    lage.stumm.sichern();
 
     match ergebnis {
         Ok(v) => v,
@@ -133,6 +134,14 @@ pub async fn dialoge_holen(lage: &Arc<Lage>, grenze: usize, versatz: usize) -> R
     let mut gesehen = 0usize;
     while let Some(d) = lauf.next().await.map_err(|e| e.to_string())? {
         lage.verzeichnis.merken(&d.chat().pack());
+        // Die Stummschaltung steht nur hier, im rohen Dialog. Sie wird
+        // bei jedem Durchlauf mitgenommen -- so ist die Tabelle auch dann
+        // aktuell, wenn der Daemon das updateNotifySettings verpasst hat,
+        // weil er gerade nicht lief.
+        lage.stumm.setzen(
+            crate::verzeichnis::markiert(&d.chat().pack()),
+            crate::stumm::bis_aus_dialog(&d.raw),
+        );
         if gesehen >= versatz {
             aus.push(formen::dialog(&d));
         }
@@ -142,6 +151,7 @@ pub async fn dialoge_holen(lage: &Arc<Lage>, grenze: usize, versatz: usize) -> R
         }
     }
     lage.verzeichnis.sichern();
+    lage.stumm.sichern();
     Ok(aus)
 }
 
