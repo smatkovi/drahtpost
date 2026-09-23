@@ -191,11 +191,20 @@ async fn lauf() -> Result<(), String> {
             //
             // Die Zeitgrenze ist die Notbremse: ohne Netz darf der
             // Durchlauf den Updatestrom nicht auf Dauer anhalten.
-            if angemeldet && (lage.verzeichnis.leer() || !lage.stumm.bekannt()) {
+            if angemeldet && (lage.verzeichnis.leer() || !lage.stumm.vollstaendig()) {
                 eprintln!("== Verzeichnis oder Stummliste fehlt, hole alle Dialoge");
                 let fuellen = befehle::dialoge_holen(&lage, usize::MAX, 0);
                 match tokio::time::timeout(Duration::from_secs(300), fuellen).await {
-                    Ok(Ok(liste)) => eprintln!("== {} Dialoge gelesen", liste.len()),
+                    Ok(Ok(liste)) => {
+                        // Erst jetzt darf die Stummliste auf die Platte:
+                        // vorher waere sie nur ein Ausschnitt.
+                        lage.stumm.abschliessen();
+                        eprintln!(
+                            "== {} Dialoge gelesen, {} stumm",
+                            liste.len(),
+                            lage.stumm.anzahl()
+                        );
+                    }
                     Ok(Err(e)) => eprintln!("⚠ Dialoge: {e}"),
                     Err(_) => eprintln!("⚠ Dialoge: zu lange, weiter ohne"),
                 }

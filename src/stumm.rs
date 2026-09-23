@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use grammers_tl_types as tl;
@@ -28,11 +29,19 @@ pub struct Stummliste {
     /// markierte Kennung -> Zeitpunkt, bis zu dem stumm.
     tabelle: Mutex<HashMap<i64, i32>>,
     pfad: PathBuf,
-    /// Lag beim Start schon eine Tabelle da? Wenn nicht, muessen die
-    /// Dialoge einmal geholt werden -- auch dann, wenn das Verzeichnis
-    /// voll ist. Genau der Fall bei einem Drahtpost, das ueber eine
-    /// aeltere Fassung installiert wird.
-    bekannt: bool,
+    /// Steht die Tabelle vollstaendig? Beim Start heisst das: es lag
+    /// schon eine Datei da. Sonst wird sie erst mit dem vollstaendigen
+    /// Dialogdurchlauf vollstaendig -- und vorher wird nichts
+    /// gespeichert.
+    ///
+    /// Das ist keine Feinheit: gespeichert wird nach jedem Befehl, und
+    /// die Bruecke fragt gleich nach dem Verbinden `get_dialogs` mit
+    /// hundert Dialogen. Ohne diese Sperre laege nach einem
+    /// abgebrochenen Durchlauf -- GPRS, Zeitgrenze -- eine halbe Tabelle
+    /// auf der Platte, die beim naechsten Start als vollstaendig gaelte.
+    /// Genau die stillen stummgeschalteten Gruppen fehlten dann fuer
+    /// immer.
+    vollstaendig: AtomicBool,
     schmutzig: Mutex<bool>,
 }
 
@@ -40,7 +49,7 @@ impl Stummliste {
     pub fn laden(daten: &Path) -> Self {
         let pfad = daten.join("stumm.json");
         let roh = std::fs::read_to_string(&pfad).ok();
-        let bekannt = roh.is_some();
+        let vollstaendig = roh.is_some();
         let tabelle = roh
             .and_then(|t| serde_json::from_str::<HashMap<String, i32>>(&t).ok())
             .map(|m| {
@@ -53,16 +62,29 @@ impl Stummliste {
         Self {
             tabelle: Mutex::new(tabelle),
             pfad,
-            bekannt,
+            vollstaendig: AtomicBool::new(vollstaendig),
             schmutzig: Mutex::new(false),
         }
     }
 
-    /// Ist die Tabelle ueberhaupt schon einmal gefuellt worden? Eine leere
-    /// Datei ist eine gueltige Antwort ("nichts ist stumm") -- das
-    /// Fehlen der Datei ist es nicht.
-    pub fn bekannt(&self) -> bool {
-        self.bekannt
+    /// Ist die Tabelle vollstaendig? Eine leere Datei ist eine gueltige
+    /// Antwort ("nichts ist stumm") -- das Fehlen der Datei ist es nicht.
+    pub fn vollstaendig(&self) -> bool {
+        self.vollstaendig.load(Ordering::Relaxed)
+    }
+
+    /// Der Dialogdurchlauf ist durchgelaufen: ab jetzt darf gespeichert
+    /// werden. Nur der vollstaendige Durchlauf ruft das auf.
+    pub fn abschliessen(&self) {
+        self.vollstaendig.store(true, Ordering::Relaxed);
+        *self.schmutzig.lock().unwrap() = true;
+        self.sichern();
+    }
+
+    /// Wie viele Chats gerade stumm sind -- fuers Protokoll.
+    pub fn anzahl(&self) -> usize {
+        let jetzt = jetzt();
+        self.tabelle.lock().unwrap().values().filter(|b| **b > jetzt).count()
     }
 
     pub fn setzen(&self, kennung: i64, bis: i32) {
@@ -91,6 +113,11 @@ impl Stummliste {
     }
 
     pub fn sichern(&self) {
+        // Halbe Tabellen bleiben im Speicher. Auf der Platte wuerden sie
+        // beim naechsten Start als das Ganze gelten.
+        if !self.vollstaendig() {
+            return;
+        }
         {
             let mut s = self.schmutzig.lock().unwrap();
             if !*s {
@@ -172,12 +199,17 @@ mod proben {
         std::fs::create_dir_all(&d).unwrap();
         {
             let l = liste(&d);
-            assert!(!l.bekannt(), "ohne Datei ist nichts bekannt");
+            assert!(!l.vollstaendig(), "ohne Datei ist nichts vollstaendig");
             l.setzen(-1001461414594, i32::MAX);
             l.sichern();
+            assert!(
+                !d.join("stumm.json").exists(),
+                "vor dem Abschluss darf nichts auf der Platte landen"
+            );
+            l.abschliessen();
         }
         let l = liste(&d);
-        assert!(l.bekannt(), "mit Datei gilt die Tabelle als gefuellt");
+        assert!(l.vollstaendig(), "mit Datei gilt die Tabelle als vollstaendig");
         assert!(l.stumm(-1001461414594));
 
         // Lautstellen loescht den Eintrag, und zwar auch auf der Platte.
