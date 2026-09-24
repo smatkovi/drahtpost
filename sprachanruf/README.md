@@ -82,7 +82,52 @@ Dazu gibt es mit `TGVOIP_USE_CALLBACK_AUDIO_IO` genau die Schnittstelle,
 die wir brauchen: `SetAudioDataCallbacks(eingang, ausgang)` — PCM rein,
 PCM raus, der Rest ist Sache der Brücke.
 
-### Was fehlt: eine C++11-Bibliothek mit weichem Gleitkomma-ABI
+### Es läuft: libtgvoip 2.5 auf der N950
+
+```
+libtgvoip 2.5
+Verbindungsstufe (min/max): 92/92
+VoIPController angelegt
+Ton-Rueckrufe gesetzt
+wieder abgeraeumt -- libtgvoip laeuft auf diesem Geraet
+```
+
+Damit ist die Machbarkeit der Tonseite vollständig belegt: die Bibliothek
+übersetzt, bindet und läuft, die Rückruf-Tonschnittstelle steht, und Opus
+kostet 11 % des Budgets. Was bleibt, ist Signalisierung — und die eine
+offene Frage unten.
+
+### Der Umweg, der keiner war: das Gleitkomma-ABI
+
+Zwischendurch sah es aus, als bräuchte es eine C++11-Laufzeit mit
+**weichem** Gleitkomma-ABI, weil die Bindung an den Symbolen der alten
+libstdc++ scheiterte und die GCC-14-Kette hart gebaut ist. Das war ein
+Trugschluss, und er ist es wert, hier zu stehen:
+
+```
+readelf -A auf dem Sysroot:
+libc.so.6       Tag_ABI_VFP_args: VFP registers
+libm.so.6       Tag_ABI_VFP_args: VFP registers
+libQtCore.so.4  Tag_ABI_VFP_args: VFP registers
+libstdc++.so.6  Tag_ABI_VFP_args: VFP registers
+```
+
+**Harmattan ist hart gleitkommig.** Der Sonderfall ist Go, dessen
+ARM-Konvention Gleitkommazahlen in Kernregistern reicht — deshalb braucht
+*cgo* clang mit `-mfloat-abi=softfp`. Für C und C++ gilt die harte Kette,
+und dann bindet `-static-libstdc++` die fehlende C++11-Bibliothek einfach
+mit ein, genau wie bei der Qt-Oberfläche dieses Projekts.
+
+Zwei Fallen dabei, beide bezahlt:
+
+* Wer Übersetzerausgabe durch `head` leitet, killt den Übersetzer per
+  SIGPIPE — bei zwei warnungsreichen Opus-Dateien fehlte danach
+  stillschweigend das Objekt, und der Binder meldete fehlende Symbole,
+  die es gar nicht sein konnten.
+* `Stop()` vor `delete` beim VoIPController, sonst bricht er ab. Die
+  Bibliothek sagt es selbst, in Großbuchstaben.
+
+### Nicht mehr nötig: eine Laufzeit mit weichem ABI
 
 Die Bibliothek übersetzt, aber sie bindet nicht. Der Grund ist eine Zange:
 
@@ -98,13 +143,6 @@ Die Bibliothek übersetzt, aber sie bindet nicht. Der Grund ist eine Zange:
   in VFP-Registern statt in Kernregistern. Das stürzt nicht ab, es rechnet
   falsch.
 
-Es braucht also eine C++11-Laufzeit für `armv7 softfp`. Zwei Wege:
-
-1. **libc++ für das Ziel bauen** (clang + cmake, llvm-project als Quelle).
-   Bounded, wiederverwendbar — und der Schlüssel für *jede* moderne
-   C++-Portierung auf dieses Gerät, tgcalls eingeschlossen.
-2. Eine GCC-Kreuzkette mit `--with-float=softfp` bauen. Länger, aber
-   vertrauter.
-
-Vorher lohnt keine Arbeit an der Signalisierung: ohne Laufzeit gibt es
-kein Binär.
+Beide Wege — libc++ für das Ziel bauen oder eine GCC-Kette mit
+`--with-float=softfp` — haben sich damit erledigt. Gebraucht wird keiner
+von beiden.

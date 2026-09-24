@@ -9,7 +9,11 @@ SR=$HOME/QtSDK/Madde/sysroots/harmattan_sysroot_10.2011.34-1_slim
 OUT=${1:-/tmp/opusbau}
 ART=${2:-fixed}     # fixed oder float
 
-CC="clang --target=armv7-unknown-linux-gnueabi --sysroot=$SR -mfloat-abi=softfp -march=armv7-a -mfpu=neon"
+# Harmattan ist hart gleitkommig (readelf -A auf libc/libm/libstdc++:
+# "Tag_ABI_VFP_args: VFP registers"). Fuer C und C++ gilt also die harte
+# Kette; weich war nur noetig, wo Go mitspielt -- dessen ARM-Konvention
+# reicht Gleitkommazahlen in Kernregistern.
+CC="${CC:-/tmp/xgcc-harmattan/bin/arm-none-linux-gnueabi-gcc --sysroot=$SR -march=armv7-a -mfpu=neon}"
 
 mkdir -p "$OUT"
 cd "$SRC"
@@ -40,7 +44,13 @@ rm -f "$OUT"/*.o
 n=0
 for q in $QUELLEN; do
     o="$OUT/$(echo "$q" | tr '/' '_' | sed 's/\.c$/.o/')"
-    $CC $FAHNEN -c "$q" -o "$o" 2>&1 | head -5
+    # Nicht durch head leiten: schliesst der die Leitung, faengt der
+    # Uebersetzer SIGPIPE und stirbt mitten in der Ausgabe -- bei zwei
+    # warnungsreichen Dateien fehlte danach stillschweigend das Objekt.
+    if ! $CC $FAHNEN -c "$q" -o "$o" > "$o.log" 2>&1; then
+        echo "!! $q"
+        grep -m3 "error" "$o.log"
+    fi
     n=$((n+1))
 done
 echo "== $n Dateien uebersetzt ($ART)"

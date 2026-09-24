@@ -45,6 +45,9 @@ int main() {
 		[](int16_t*, size_t) {});  // was wir hoeren: ginge an die Bruecke
 	printf("Ton-Rueckrufe gesetzt\n");
 
+	// Stop() vor delete: die Bibliothek besteht darauf, und zwar mit
+	// Nachdruck ("CALL controller->Stop() BEFORE DELETING").
+	c->Stop();
 	delete c;
 	printf("wieder abgeraeumt -- libtgvoip laeuft auf diesem Geraet\n");
 	return 0;
