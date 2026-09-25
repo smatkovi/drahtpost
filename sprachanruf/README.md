@@ -402,3 +402,67 @@ V4L2-Aufnahme, sondern den OMAP3-ISP mit Media-Controller (`omap3_isp`,
 `smiapp` auf `/dev/video0…6`). WebRTCs `video_capture_v4l2` erwartet ein
 Gerät, dem man Format setzt und das dann losläuft — das ist hier nicht
 so. Der Weg führt über Harmattans eigene GStreamer-Kette.
+
+## Die Kamera des N950
+
+Der N950 hat **keine** einfache V4L2-Aufnahme. Er hat den OMAP3-ISP mit
+Media-Controller: `/dev/media0` und ein Dutzend Subdev-Knoten, die erst
+zu einer Kette verschaltet werden müssen. WebRTCs `video_capture_v4l2`
+setzt einem Gerät das Format und startet es — das geht hier ins Leere.
+
+Verschalten kann das Harmattans eigenes GStreamer-Element `subdevsrc`.
+`tgowt/harmattankamera.cpp` startet deshalb eine kurze Kette als eigenen
+Prozess und liest die Bilder aus einer Röhre:
+
+```
+subdevsrc ! video/x-raw-yuv,format=(fourcc)UYVY,width=320,height=240 ! fdsink fd=1
+```
+
+Die Maße gehören **in die Kette**: der ISP skaliert dann in Hardware.
+Ohne sie liefert die Kamera 1008×754, und das Herunterrechnen kostet
+Rechenzeit, die der Kodierer braucht. UYVY→I420 macht libyuv, das ohnehin
+in libtg_owt liegt und NEON benutzt.
+
+```
+user@RM680:~$ tonprozess --kameraprobe 5
+Kamera: 132 Bilder in 5 s, 320x240, 34.0 ms Abstand (= 29.4 B/s)
+```
+
+### Vier Dinge, die daran hingen
+
+* **Der Haken muss VOR dem Aufzählen der Geräte sitzen.** Der ISP legt
+  `/dev/video0…6` an; diese Knoten beim Aufzählen zu öffnen bleibt
+  hängen, weil die Kette noch nicht verschaltet ist. Die Kameraprobe
+  stand dort minutenlang, ohne eine Zeile zu sagen.
+* **`GRP::video` bekommt ein unsigniertes Paket nicht.** `restok.conf`
+  führt es als `~GRP::video`, also geschützt; der Aegis-Antrag im Paket
+  wird angenommen und gewährt nichts. Bleibt eine udev-Regel — und deren
+  Nummer muss **über 91** liegen, weil `91-permissions.rules`
+  `SUBSYSTEM=="video4linux" GROUP="video"` setzt und alles Frühere
+  überschreibt. Mit `60-` sah es so aus, als greife die Regel gar nicht.
+* **Die Bildquelle muss auf dem Medienfaden angelegt werden.** Sie
+  bekommt einen Stellvertreter, der jeden Aufruf an den Faden
+  weiterreicht, auf dem sie entstand. Auf einem gewöhnlichen Faden ist
+  `rtc::Thread::Current()` null, und der erste Aufruf springt ins Leere.
+* **`setOutput` für die Vorschau stürzt trotzdem ab** — im
+  Stellvertreter-Marshalling. Wir brauchen den Umweg nicht: im
+  Kameramodul liegt das Bild schon vor, und ein zweiter Haken legt es in
+  eine eigene Ablage. Das ist nicht nur ein Ausweichen, es ist auch
+  billiger — das Bild kommt ungeschnitten und ohne eine weitere Kopie.
+
+### Wie der Absturz zu finden war
+
+Kein gdb auf dem Gerät, und `backtrace()` kommt auf ARM nicht durch den
+Signalrahmen — der Rücklauf endete immer nach zwei Zeilen. Was half: der
+Programmzähler aus `ucontext`, die Adresse des eigenen Melders als
+Maßstab für die Verschiebung, und `llvm-symbolizer` auf die
+unabgespeckte Datei.
+
+```
+*** Signal 11 bei pc=00000208 lr=1f935051, Adresse 0x208
+    Melder liegt bei 0x1f9291b1
+→ webrtc::MethodCall<VideoTrackSourceInterface, …>::Marshal(rtc::Thread*)
+```
+
+Ein Sprung nach `0x208` ist ein virtueller Aufruf auf einem Zeiger, der
+keiner ist — und `Marshal(rtc::Thread*)` sagt dann auch gleich, welcher.

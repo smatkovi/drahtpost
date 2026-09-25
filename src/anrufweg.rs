@@ -43,6 +43,10 @@ pub struct Gespraech {
     /// spaeter auch, wie tgcalls den Schluessel herum liest.
     pub ausgehend: bool,
     pub partner: i64,
+    /// Ob dieses Gespraech ein Videoanruf ist. Telegram traegt das im
+    /// Kennzeichen jeder Anfrage mit; wer es weglaesst, bekommt beim
+    /// Gegenueber keinen Kameraknopf zu sehen.
+    pub video: bool,
     tausch: Tausch,
     /// Nur beim Anrufer: das eigene `g_a`, bis es gezeigt werden darf.
     g_a: Option<Vec<u8>>,
@@ -109,6 +113,7 @@ pub async fn anrufen(
     client: &grammers_client::Client,
     wen: tl::enums::InputUser,
     partner: i64,
+    video: bool,
 ) -> Result<Gespraech, String> {
     let (p, g, zufall) = dh_vorgaben(client).await?;
     let tausch = Tausch::neu(&p, g, &zufall, &eigener_zufall());
@@ -116,7 +121,7 @@ pub async fn anrufen(
 
     let antwort = client
         .invoke(&tl::functions::phone::RequestCall {
-            video: false,
+            video,
             user_id: wen,
             random_id: rand::random(),
             g_a_hash: anruf::potenz_abdruck(&g_a),
@@ -133,6 +138,7 @@ pub async fn anrufen(
         zugriff,
         ausgehend: true,
         partner,
+        video,
         tausch,
         g_a: Some(g_a),
         g_a_abdruck: None,
@@ -151,6 +157,7 @@ pub async fn eingehend(
         zugriff: anfrage.access_hash,
         ausgehend: false,
         partner: anfrage.admin_id,
+        video: anfrage.video,
         tausch,
         g_a: None,
         g_a_abdruck: Some(anfrage.g_a_hash.clone()),
@@ -232,7 +239,7 @@ pub async fn auflegen(
 ) -> Result<(), String> {
     client
         .invoke(&tl::functions::phone::DiscardCall {
-            video: false,
+            video: gespraech.video,
             peer: gespraech.zeiger(),
             duration: dauer,
             reason: grund,
@@ -318,6 +325,7 @@ pub fn uebergabe(
         "id": gespraech.id,
         "zugriff": gespraech.zugriff,
         "ausgehend": gespraech.ausgehend,
+        "video": gespraech.video,
         "fassung": fassung,
         "schluessel": hex(schluessel),
         "p2p_erlaubt": ruf.p2p_allowed,
@@ -344,6 +352,7 @@ mod tests {
             zugriff: 2,
             ausgehend,
             partner: 42,
+            video: false,
             tausch,
             g_a: None,
             g_a_abdruck: None,
@@ -601,13 +610,29 @@ pub async fn tonprobe(lage: &Arc<Lage>) -> Result<Value, String> {
     }
 }
 
+/// Die Kamera im laufenden Gespraech an- oder abschalten.
+///
+/// Telegram nennt das "Call Upgrade": aus einem Sprachanruf wird einer
+/// mit Bild, ohne ihn neu aufzubauen. Die Signalisierung dafuer macht
+/// tgcalls selbst -- wir sagen nur dem Tonprozess Bescheid.
+pub async fn kamera(lage: &Arc<Lage>, an: bool) -> Result<Value, String> {
+    if lage.gespraech.lock().await.is_none() {
+        return Err("kein Gespraech".into());
+    }
+    if an_den_ton(&json!({"befehl": "kamera", "an": an})).await {
+        Ok(json!({"ok": true}))
+    } else {
+        Err("Tonprozess nicht erreichbar".into())
+    }
+}
+
 /// Ein Anruf hinaus.
-pub async fn starten(lage: &Arc<Lage>, kennung: i64) -> Result<Value, String> {
+pub async fn starten(lage: &Arc<Lage>, kennung: i64, video: bool) -> Result<Value, String> {
     if lage.gespraech.lock().await.is_some() {
         return Err("es laeuft schon ein Gespraech".into());
     }
     let chat = crate::befehle::chat_oeffentlich(lage, kennung).await?;
-    let g = anrufen(&lage.client, chat.to_input_user_lossy(), kennung).await?;
+    let g = anrufen(&lage.client, chat.to_input_user_lossy(), kennung, video).await?;
     let antwort = json!({"ok": true, "call_id": g.id});
     *lage.gespraech.lock().await = Some(g);
     Ok(antwort)

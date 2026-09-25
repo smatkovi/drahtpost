@@ -8,3 +8,4 @@ sichtbar, statt still das Falsche zu tun.
 | Flicken | wofür |
 |---|---|
 | `ohne-aec3.patch` | WebRTCs Echoausl&ouml;schung kostet auf dem OMAP3630 62,5 % eines Kerns und ist neben Nokias eigener doppelt gemoppelt |
+| `harmattan-kamera.patch` | Der N950 hat keine einfache V4L2-Aufnahme, sondern den OMAP3-ISP mit Media-Controller — der Haken führt zu `harmattankamera.cpp` |

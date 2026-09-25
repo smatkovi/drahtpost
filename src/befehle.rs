@@ -42,9 +42,16 @@ pub async fn behandeln(lage: &Arc<Lage>, frage: &Value) -> Value {
         // Sprachanrufe. Die Arbeit steht in anrufweg.rs; hier ist nur
         // der Namensschalter.
         "call_start" => match kennung_aus(args) {
-            Ok(k) => crate::anrufweg::starten(lage, k).await,
+            Ok(k) => {
+                let video = args.get("video").and_then(|x| x.as_bool()).unwrap_or(false);
+                crate::anrufweg::starten(lage, k, video).await
+            }
             Err(e) => Err(e),
         },
+        "call_video" => {
+            let an = args.get("on").and_then(|x| x.as_bool()).unwrap_or(true);
+            crate::anrufweg::kamera(lage, an).await
+        }
         "call_accept" => crate::anrufweg::abheben(lage).await,
         "call_audio_check" => crate::anrufweg::tonprobe(lage).await,
         "call_signal" => {

@@ -1,0 +1,70 @@
+Die Kamera des N950 statt WebRTCs V4L2-Weg.
+
+video_capture_v4l2 setzt einem Geraet das Format und startet es. Der N950
+hat kein solches Geraet, sondern den OMAP3-ISP mit Media-Controller --
+/dev/media0 und ein Dutzend Subdev-Knoten, die erst zu einer Kette
+verschaltet werden muessen. Der Haken fuehrt zu harmattankamera.cpp, das
+Harmattans eigenes GStreamer-Element subdevsrc benutzt.
+
+Er steht VOR dem Aufzaehlen der Geraete, und das ist kein Zufall: der ISP
+legt /dev/video0..6 an, und diese Knoten beim Aufzaehlen zu oeffnen bleibt
+haengen, weil die Kette noch nicht verschaltet ist. Beim ersten Versuch
+stand die Kameraprobe genau dort, ohne eine Zeile zu sagen.
+
+Faellt der Haken aus (keine Rechte auf den Media-Controller, kein
+gst-launch), geht es weiter wie bisher -- auf einem Baurechner mit
+gewoehnlicher Webcam aendert sich also nichts.
+
+diff --git a/tgcalls/platform/tdesktop/VideoCameraCapturer.cpp b/tgcalls/platform/tdesktop/VideoCameraCapturer.cpp
+index 8f228c0..657c342 100644
+--- a/tgcalls/platform/tdesktop/VideoCameraCapturer.cpp
++++ b/tgcalls/platform/tdesktop/VideoCameraCapturer.cpp
+@@ -49,6 +49,27 @@ VideoCameraCapturer::~VideoCameraCapturer() {
+ void VideoCameraCapturer::create() {
+ 	_failed = false;
+ 
++	// Erst der Weg ueber den Media-Controller, und zwar VOR dem
++	// Aufzaehlen der Geraete: der OMAP3-ISP legt /dev/video0..6 an, und
++	// diese Knoten beim Aufzaehlen zu oeffnen bleibt haengen -- die
++	// Kette ist ja noch nicht verschaltet. Genau daran blieb die
++	// Kameraprobe stehen, ohne eine Zeile zu sagen.
++	_module = harmattanKameraOeffnen();
++	if (_module) {
++		_module->RegisterCaptureDataCallback(this);
++		// Nicht 1280x720: gemessen kostet VP8 dort mehr als ein ganzer
++		// Kern. QVGA ist das, was der A8 mit 15 Bildern traegt.
++		_capability.width = 320;
++		_capability.height = 240;
++		_capability.maxFPS = 15;
++		_capability.videoType = webrtc::VideoType::kI420;
++		if (_module->StartCapture(_capability) == 0) {
++			_dimensions = std::make_pair(_capability.width, _capability.height);
++			return;
++		}
++		destroy();
++	}
++
+ #ifdef WEBRTC_LINUX
+ 	auto options = GetVideoCaptureOptions();
+ 	const auto info = std::unique_ptr<
+diff --git a/tgcalls/platform/tdesktop/VideoCameraCapturer.h b/tgcalls/platform/tdesktop/VideoCameraCapturer.h
+index 0ed54db..6883fcd 100644
+--- a/tgcalls/platform/tdesktop/VideoCameraCapturer.h
++++ b/tgcalls/platform/tdesktop/VideoCameraCapturer.h
+@@ -11,10 +11,16 @@
+ 
+ #include <memory>
+ #include <vector>
++#include <functional>
+ #include <stddef.h>
+ 
+ namespace tgcalls {
+ 
++// Stehen in harmattankamera.cpp: die Kamera des N950 ueber den
++// Media-Controller, und ein Haken fuer die Vorschau.
++rtc::scoped_refptr<webrtc::VideoCaptureModule> harmattanKameraOeffnen();
++void kameraVorschau(std::function<void(const webrtc::VideoFrame &)> wohin);
++
+ class VideoCameraCapturer
+ 	: public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+ public:

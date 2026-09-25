@@ -55,6 +55,11 @@ for f in "$HIER"/flicken/*.patch; do
     fi
 done
 
+# Unsere eigenen Uebersetzungseinheiten in den Abzug legen. Als Datei und
+# nicht als Flicken: ein Flicken, der 200 Zeilen einfuegt, waere beim
+# naechsten Abzug nicht mehr zu lesen.
+cp "$HIER/harmattankamera.cpp" "$TG/tgcalls/platform/tdesktop/"
+
 mkdir -p "$AUS"
 QUELLEN=$(ls $TG/tgcalls/*.cpp $TG/tgcalls/utils/*.cpp $TG/tgcalls/v2/*.cpp $TG/tgcalls/platform/tdesktop/*.cpp $TG/tgcalls/desktop_capturer/*.cpp $TG/tgcalls/third-party/json11.cpp 2>/dev/null | grep -v Test)
 

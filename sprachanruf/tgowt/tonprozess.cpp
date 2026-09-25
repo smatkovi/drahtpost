@@ -26,6 +26,8 @@
 #include <thread>
 #include <vector>
 
+#include <signal.h>
+#include <ucontext.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -35,8 +37,14 @@
 #include <tgcalls/Instance.h>
 #include <tgcalls/InstanceImpl.h>
 #include <tgcalls/StaticThreads.h>
+#include <rtc_base/thread.h>
+#include <tgcalls/VideoCaptureInterface.h>
+#include <tgcalls/platform/tdesktop/VideoCameraCapturer.h>
+#include <api/video/video_frame.h>
+#include <api/video/video_sink_interface.h>
 #include <tgcalls/v2/InstanceV2Impl.h>
 
+#include "bildablage.h"
 #include "pulsgeraet.h"
 
 namespace {
@@ -97,9 +105,52 @@ void anDieDrahtpost(const json11::Json &was) {
 
 // --- Das laufende Gespraech -------------------------------------------
 
+/// Die Kamera anlegen, und zwar auf dem Medienfaden von tgcalls.
+///
+/// Das ist keine Vorsichtsmassnahme, sondern Pflicht. Die Bildquelle
+/// bekommt einen Stellvertreter (VideoTrackSourceProxy), der jeden
+/// Aufruf an den Faden weiterreicht, auf dem sie angelegt wurde. Legt
+/// man sie auf einem gewoehnlichen Faden an, ist dieser Faden fuer
+/// WebRTC nicht vorhanden -- rtc::Thread::Current() ist dort null --,
+/// und der erste Aufruf springt ins Leere:
+///
+///     *** Signal 11 bei pc=00000028
+///     webrtc::MethodCall<VideoTrackSourceInterface, …>::Marshal(rtc::Thread*)
+///
+/// Der Absturz kam erst, als eine Senke dazukam; bis dahin wurde nichts
+/// weitergereicht, und alles sah gut aus.
+std::shared_ptr<tgcalls::VideoCaptureInterface> kameraAnlegen() {
+    auto faeden = tgcalls::StaticThreads::getThreads();
+    std::shared_ptr<tgcalls::VideoCaptureInterface> kamera;
+    faeden->getMediaThread()->BlockingCall([&] {
+        kamera = tgcalls::VideoCaptureInterface::Create(faeden, "harmattan", false, nullptr);
+    });
+    return kamera;
+}
+
+/// Die eigene Vorschau: dasselbe Bild, das hinausgeht, in einer zweiten
+/// Ablage. Es kommt aus dem Kameramodul, nicht aus tgcalls -- dessen
+/// setOutput stuerzt hier ab (siehe flicken/harmattan-kamera.patch).
+std::shared_ptr<drahtpost::Bildablage> vorschauAnlegen() {
+    auto ablage = std::make_shared<drahtpost::Bildablage>();
+    if (!ablage->oeffnen("/drahtpost-eigenbild")) {
+        return nullptr;
+    }
+    std::weak_ptr<drahtpost::Bildablage> schwach = ablage;
+    tgcalls::kameraVorschau([schwach](const webrtc::VideoFrame &r) {
+        if (auto a = schwach.lock()) {
+            a->legen(r);
+        }
+    });
+    return ablage;
+}
+
 struct Gespraech {
     std::unique_ptr<tgcalls::Instance> instanz;
     rtc::scoped_refptr<drahtpost::PulsGeraet> geraet;
+    std::shared_ptr<tgcalls::VideoCaptureInterface> kamera;
+    std::shared_ptr<drahtpost::Bildablage> bild;
+    std::shared_ptr<drahtpost::Bildablage> eigenbild;
     int64_t id = 0;
 };
 
@@ -157,6 +208,7 @@ void auflegen() {
     if (g->geraet) {
         g->geraet->Terminate();
     }
+    tgcalls::kameraVorschau(nullptr);
     sagen("== beendet");
 }
 
@@ -220,6 +272,21 @@ void anrufen(const json11::Json &b) {
     d.createAudioDeviceModule =
         [geraet](webrtc::TaskQueueFactory *) { return geraet; };
 
+    // Das Bild der Gegenstelle landet in einer Ablage, aus der die
+    // Oberflaeche es sich holt. Auch bei einem Sprachanruf angelegt:
+    // Telegram erlaubt, die Kamera mitten im Gespraech einzuschalten,
+    // und dann ist es zu spaet, den Weg erst zu bauen.
+    auto bild = std::make_shared<drahtpost::Bildablage>();
+    bild->oeffnen();
+
+    std::shared_ptr<tgcalls::VideoCaptureInterface> kamera;
+    std::shared_ptr<drahtpost::Bildablage> eigenbild;
+    if (b["video"].bool_value()) {
+        kamera = kameraAnlegen();
+        d.videoCapture = kamera;
+        eigenbild = vorschauAnlegen();
+    }
+
     const int64_t id = (int64_t)b["id"].number_value();
     d.stateUpdated = [id](tgcalls::State z) {
         sagen(std::string("== Zustand: ") + zustandsname(z));
@@ -251,9 +318,14 @@ void anrufen(const json11::Json &b) {
         sagen("✗ tgcalls kennt die Fassung " + fassung + " nicht");
         return;
     }
+    instanz->setIncomingVideoOutput(bild->senke());
+
     auto g = std::make_unique<Gespraech>();
     g->id = id;
     g->geraet = geraet;
+    g->kamera = kamera;
+    g->bild = bild;
+    g->eigenbild = eigenbild;
     g->instanz = std::move(instanz);
     std::lock_guard<std::mutex> l(sperre);
     laeuft = std::move(g);
@@ -285,6 +357,25 @@ void zeile_verarbeiten(const std::string &zeile) {
         // Nur ein Lebenszeichen. Wer fragt, will wissen, ob der Weg vom
         // Daemon hierher steht -- nicht, wie es dem Ton geht.
         sagen("== Probe: Tonprozess ist da");
+    } else if (befehl == "kamera") {
+        // Die Kamera mitten im Gespraech: Telegram nennt es Call
+        // Upgrade. Die Signalisierung macht tgcalls selbst.
+        std::lock_guard<std::mutex> l(sperre);
+        if (!laeuft || !laeuft->instanz) {
+            return;
+        }
+        if (j["an"].bool_value()) {
+            if (!laeuft->kamera) {
+                laeuft->kamera = kameraAnlegen();
+                laeuft->eigenbild = vorschauAnlegen();
+            }
+            laeuft->kamera->setState(tgcalls::VideoState::Active);
+            laeuft->instanz->setVideoCapture(laeuft->kamera);
+            sagen("== Kamera an");
+        } else if (laeuft->kamera) {
+            laeuft->kamera->setState(tgcalls::VideoState::Inactive);
+            sagen("== Kamera aus");
+        }
     } else if (befehl == "stumm") {
         std::lock_guard<std::mutex> l(sperre);
         if (laeuft && laeuft->instanz) {
@@ -365,6 +456,95 @@ private:
     std::chrono::steady_clock::time_point zuletzt_;
 };
 
+/// Die Kamera allein, ohne Anruf.
+///
+/// Zaehlt, was aus der GStreamer-Kette wirklich herauskommt, und was das
+/// Umrechnen nach I420 kostet. Ohne diesen Weg zeigte sich ein Fehler in
+/// der Kette erst im Gespraech -- als schwarzes Bild beim Gegenueber.
+class Bildzaehler : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+public:
+    void OnFrame(const webrtc::VideoFrame &rahmen) override {
+        auto jetzt = std::chrono::steady_clock::now();
+        if (bilder > 0) {
+            summe_ += std::chrono::duration<double, std::milli>(jetzt - zuletzt_).count();
+        }
+        zuletzt_ = jetzt;
+        ++bilder;
+        breite = rahmen.width();
+        hoehe = rahmen.height();
+    }
+    double abstand() const { return bilder > 1 ? summe_ / (bilder - 1) : 0; }
+    int bilder = 0, breite = 0, hoehe = 0;
+
+private:
+    double summe_ = 0;
+    std::chrono::steady_clock::time_point zuletzt_;
+};
+
+/// Dieselbe Kamera, aber ohne tgcalls dazwischen.
+///
+/// Wenn die Probe hier laeuft und mit tgcalls nicht, liegt es nicht an
+/// der Kamera. Das zu trennen ist die halbe Fehlersuche.
+int rohkameraprobe(int sekunden) {
+    auto modul = tgcalls::harmattanKameraOeffnen();
+    if (!modul) {
+        sagen("✗ kein Modul");
+        return 1;
+    }
+    auto zaehler = std::make_shared<Bildzaehler>();
+    modul->RegisterCaptureDataCallback(zaehler.get());
+    webrtc::VideoCaptureCapability wunsch;
+    wunsch.width = 320;
+    wunsch.height = 240;
+    wunsch.maxFPS = 15;
+    wunsch.videoType = webrtc::VideoType::kI420;
+    if (modul->StartCapture(wunsch) != 0) {
+        sagen("✗ StartCapture");
+        return 1;
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(sekunden));
+    modul->StopCapture();
+    modul->DeRegisterCaptureDataCallback();
+    std::printf("Rohkamera: %d Bilder, %dx%d, %.1f ms Abstand (= %.1f B/s)\n",
+                zaehler->bilder, zaehler->breite, zaehler->hoehe,
+                zaehler->abstand(), zaehler->abstand() > 0 ? 1000.0 / zaehler->abstand() : 0);
+    return 0;
+}
+
+int kameraprobe(int sekunden, bool ohneSenke = false) {
+    auto kamera = kameraAnlegen();
+    if (!kamera) {
+        sagen("✗ keine Kamera");
+        return 1;
+    }
+    auto zaehler = std::make_shared<Bildzaehler>();
+    // Mit "--kameraprobe 5 ohne" laeuft die Kette ohne eigene Senke --
+    // damit laesst sich trennen, ob das Zeigen oder das Aufnehmen
+    // schiefgeht.
+    // Gezaehlt wird am eigenen Haken, nicht ueber setOutput: dessen
+    // Stellvertreter stuerzt hier ab (siehe flicken/harmattan-kamera).
+    if (!ohneSenke) {
+        tgcalls::kameraVorschau([zaehler](const webrtc::VideoFrame &r) {
+            zaehler->OnFrame(r);
+        });
+    }
+    kamera->setState(tgcalls::VideoState::Active);
+    std::this_thread::sleep_for(std::chrono::seconds(sekunden));
+    kamera->setState(tgcalls::VideoState::Inactive);
+    if (ohneSenke) {
+        sagen("== ohne eigene Senke durchgelaufen");
+        return 0;
+    }
+    if (zaehler->bilder == 0) {
+        sagen("✗ kein einziges Bild -- Rechte auf /dev/media0? gst-launch-0.10 da?");
+        return 1;
+    }
+    std::printf("Kamera: %d Bilder in %d s, %dx%d, %.1f ms Abstand (= %.1f B/s)\n",
+                zaehler->bilder, sekunden, zaehler->breite, zaehler->hoehe,
+                zaehler->abstand(), 1000.0 / zaehler->abstand());
+    return 0;
+}
+
 int tonprobe(int sekunden) {
     auto geraet = drahtpost::neuesGeraet("", "");
     Zaehltransport zaehler;
@@ -386,9 +566,46 @@ int tonprobe(int sekunden) {
 
 } // namespace
 
+/// Bei einem Absturz wenigstens sagen, wo.
+///
+/// Auf dem N950 gibt es kein gdb, und ein "Segmentation fault" ohne
+/// weitere Angabe ist nicht mehr als die Feststellung, dass etwas
+/// schiefging. backtrace() aus der glibc reicht hier: es geht nur um die
+/// Frage, in wessen Code es knallt.
+void absturzmelder(int nr, siginfo_t *info, void *zusatz) {
+    // backtrace() kommt auf ARM nicht durch den Signalrahmen -- der
+    // Ruecklauf endete immer nach zwei Zeilen. Der Programmzeiger steht
+    // aber im Zusatz, und mit ihm und der unabgespeckten Datei sagt
+    // `addr2line` genau, wo es knallt.
+    auto *u = (ucontext_t *)zusatz;
+    char zeile[160];
+    int n = snprintf(zeile, sizeof(zeile),
+                     "\n*** Signal %d bei pc=%08lx lr=%08lx, Adresse %p\n",
+                     nr, (unsigned long)u->uc_mcontext.arm_pc,
+                     (unsigned long)u->uc_mcontext.arm_lr, info->si_addr);
+    n += snprintf(zeile + n, sizeof(zeile) - n, "    Melder liegt bei %p\n",
+                  (void *)&absturzmelder);
+    ssize_t x = write(2, zeile, (size_t)n);
+    (void)x;
+    _exit(128 + nr);
+}
+
 int main(int argc, char **argv) {
+    struct sigaction sa {};
+    sa.sa_sigaction = absturzmelder;
+    sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
     if (argc > 1 && std::string(argv[1]) == "--tonprobe") {
         return tonprobe(argc > 2 ? std::atoi(argv[2]) : 3);
+    }
+    if (argc > 1 && std::string(argv[1]) == "--rohkamera") {
+        return rohkameraprobe(argc > 2 ? std::atoi(argv[2]) : 5);
+    }
+    if (argc > 1 && std::string(argv[1]) == "--kameraprobe") {
+        return kameraprobe(argc > 2 ? std::atoi(argv[2]) : 5,
+                           argc > 3 && std::string(argv[3]) == "ohne");
     }
     tgcalls::Register<tgcalls::InstanceImpl>();
     tgcalls::Register<tgcalls::InstanceV2Impl>();

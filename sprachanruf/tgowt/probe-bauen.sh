@@ -46,9 +46,10 @@ $CXX -x c $HART --sysroot=$SR -O2 -fPIC -c "$HIER/video-attrappen.c" -o "$AUS/vi
 # Objekte selbst ein (tgcalls::Meta). Ohne das holt der Binder die
 # betreffenden Objekte nie herein, und Versions() bliebe leer.
 $CXX $HART --sysroot=$SR -include $SCHICHT/../harmattan-schicht.h -isystem $SCHICHT \
-    $LIBCPP -std=c++20 -O2 \
+    $LIBCPP -std=c++20 -O2 -fvisibility=hidden -funwind-tables -rdynamic \
     -DWEBRTC_POSIX -DWEBRTC_LINUX -DWEBRTC_ARCH_ARM -DWEBRTC_ARCH_ARM_V7 -DWEBRTC_HAS_NEON \
     -I$TG -I$TG/tgcalls -I$O/src -I$O/src/third_party/abseil-cpp \
+    -I$O/src/third_party/libyuv/include \
     -I$W/third_party/opus/src/include \
     "$QUELLE" -o "$AUS/$NAME" \
     -fuse-ld=lld -Wl,--error-limit=0 -Wl,--dynamic-linker=/lib/ld-linux.so.3 -nostdlib++ -static-libgcc -B"$GCC" -L"$GCC" \
