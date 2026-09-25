@@ -191,3 +191,48 @@ Alle gelöst durch eine Kompatibilitätsschicht, die über
   `#include_next`**, nicht in den Zwangs-Include — aus demselben Grund.
   Und sie muss `math.h` **zuerst** einbinden: `__NO_LONG_DOUBLE_MATH`
   entsteht ja erst dadurch.
+
+## tgcalls: gegen welches WebRTC?
+
+Das fertige `libwebrtc.a` ist Upstream vom 24.09.2026. Darauf lässt sich
+tgcalls **nicht** übersetzen, und zwar aus einem Grund, der nichts mit
+Harmattan zu tun hat: WebRTC hat inzwischen `rtc::` und `cricket::` in
+`webrtc::` zusammengelegt und sigslot gelöscht. tgcalls baut seit jeher
+gegen **tg_owt**, Telegrams eigenen WebRTC-Abzug, und der steht auf einem
+älteren Stand.
+
+Bevor ich mich für einen Weg entschieden habe, habe ich die Entfernung
+gemessen: eine Kopie von tgcalls maschinell umbenannt (`rtc::` →
+`webrtc::`, `cricket::` → `webrtc::`), sigslot aus tg_owt beigelegt und
+übersetzt.
+
+```
+ohne Umbenennung:  6 von 41 Dateien
+mit Umbenennung:  12 von 41 Dateien, 110 verschiedene Fehler
+```
+
+Die 110 sind nicht die Reste einer Umbenennung. Es sind drei Jahre
+Schnittstellenwandel:
+
+* `VoiceChannel`/`VideoChannel` gibt es nicht mehr (ChannelManager ist weg)
+* die sigslot-Signale der Transporte (`SignalWritableState`,
+  `SignalSentPacket`, `SignalRouteChange`) sind durch Rückrufe ersetzt
+* `ContentInfo`, `Codec`, `JsepIceCandidate` sind umgebaut
+* `PacketOptions`, `CryptoOptions`, `SentPacket`, `AsyncResolverInterface`
+  umbenannt oder verschoben
+
+Das wäre ein Port von tgcalls auf heutiges WebRTC — Telegrams Arbeit, nicht
+unsere. **Also tg_owt.** Und das ist gar nicht schlimm:
+
+```
+Upstream-WebRTC (depot_tools):   13 GB
+tg_owt mit allen Submodulen:    120 MB
+```
+
+tg_owt ist ein gewöhnliches CMake-Projekt und erkennt armv7+NEON selbst.
+Im nicht-gepackten Bau braucht es von OpenSSL, Opus, FFmpeg und libjpeg
+nur die **Kopfdateien**; gebunden wird erst beim Programm. Die
+Kompatibilitätsschicht der elf Lücken geht per `CMAKE_CXX_FLAGS` hinein,
+die libc++ und das clang bleiben die aus dem Upstream-Baum — der Baum
+bleibt also stehen, auch wenn `libwebrtc.a` selbst nicht mehr gebraucht
+wird.
