@@ -146,3 +146,48 @@ Die Bibliothek übersetzt, aber sie bindet nicht. Der Grund ist eine Zange:
 Beide Wege — libc++ für das Ziel bauen oder eine GCC-Kette mit
 `--with-float=softfp` — haben sich damit erledigt. Gebraucht wird keiner
 von beiden.
+
+## libwebrtc baut für Harmattan
+
+`webrtc/bauen.sh` übersetzt libwebrtc für die N950. Ergebnis:
+
+```
+libwebrtc.a   43 MB, 2845 Objekte
+Tag_FP_arch: VFPv3   Tag_ABI_VFP_args: VFP registers
+```
+
+Also genau das ABI, das Harmattan spricht. Zwei Dinge gaben den Ausschlag,
+beide hatte ich vorher unterschätzt: WebRTC bringt **seine eigene libc++**
+mit (`use_custom_libcxx`) — das Laufzeitproblem, an dem libtgvoip fast
+gescheitert wäre, löst es selbst — und es kann von Haus aus armv7
+hard-float mit NEON.
+
+### Die elf Lücken von 2009
+
+Alle gelöst durch eine Kompatibilitätsschicht, die über
+`build/config/compiler/BUILD.gn` in jede Übersetzung gezogen wird:
+
+| Was fehlte | seit wann es das gibt | wie gelöst |
+|---|---|---|
+| `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC_RAW` | Kernel 2.6.39 / 2.6.28 | Zahlen nachdefiniert; fehlt die Uhr, fällt der Code selbst zurück |
+| `pthread_setname_np`, `getname_np` | glibc 2.12 | Leerlauf-Attrappe in `schicht/pthread.h`, C **und** C++ |
+| `PRIX32` & Co. | — | `__STDC_FORMAT_MACROS` vor dem ersten Einbinden |
+| BoringSSLs NEON-Erkennung | braucht `sys/auxv.h` | `OPENSSL_STATIC_ARMCAP` — der OMAP3630 *hat* NEON |
+| `getrandom` | Kernel 3.17 | Syscall-Nummer; scheitert mit ENOSYS, BoringSSL nimmt `/dev/urandom` |
+| `sys/auxv.h` | glibc 2.16 | selbst geschrieben: liest `/proc/self/auxv` |
+| `TCP_USER_TIMEOUT` | Kernel 2.6.37 | Zahl; `setsockopt` lehnt zur Laufzeit ab, das verkraftet der Aufrufer |
+| `atan2l`, `logl`, … | — | auf ARM setzt glibc `__NO_LONG_DOUBLE_MATH`, und `math.h` erklärt die `…l`-Funktionen **gar nicht**. Da `long double` dort `double` ist, sind die Weiterleitungen in `schicht/math.h` exakt |
+| `static_assert` in C | C11 | auf `_Static_assert` |
+| `v4l2_capability.device_caps` | Kernel 3.3 | Kopfdateien des Baurechners (die Kamera öffnen wir nie) |
+| X11-Bildschirmaufnahme | — | `rtc_use_x11 = false` |
+
+### Zwei Umwege, die Zeit gekostet haben
+
+* **Die Schicht muss auf ARM beschränkt bleiben.** Gilt sie auch für den
+  Baurechner, zieht sich bindgen (Rust) C++-Kopfdateien in den Parser und
+  scheitert an libc++-Vorlagen. `enable_rust = false` ist übrigens keine
+  Lösung: WebRTC benutzt Rust in eigenen Zielen (`api/units`).
+* **Die `long double`-Mathematik gehört in ein eigenes `math.h` mit
+  `#include_next`**, nicht in den Zwangs-Include — aus demselben Grund.
+  Und sie muss `math.h` **zuerst** einbinden: `__NO_LONG_DOUBLE_MATH`
+  entsteht ja erst dadurch.

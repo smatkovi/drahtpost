@@ -1,0 +1,41 @@
+# WebRTC fuer MeeGo Harmattan (Nokia N950).
+#
+# Harmattan ist armv7-a mit NEON und HARTEM Gleitkomma-ABI (nachgeprueft:
+# readelf -A auf libc/libm/libstdc++ zeigt "VFP registers"). Die eigene
+# C++-Bibliothek von WebRTC (use_custom_libcxx) loest nebenbei das
+# Problem, dass das Sysroot von 2009 keine C++11-Bibliothek hat.
+target_os = "linux"
+target_cpu = "arm"
+arm_version = 7
+arm_float_abi = "hard"
+arm_use_neon = true
+arm_optionally_use_neon = false
+
+is_debug = false
+is_component_build = false
+symbol_level = 0
+
+# Nicht Chromiums Debian-Sysroot, sondern unseres.
+use_sysroot = false
+target_sysroot = "@SYSROOT@"
+
+# Alles weg, was wir nicht brauchen oder was auf ein modernes System zaehlt.
+rtc_include_tests = false
+rtc_build_examples = false
+rtc_build_tools = false
+rtc_enable_protobuf = false
+rtc_use_pipewire = false
+rtc_include_ilbc = false
+use_custom_libcxx = true
+treat_warnings_as_errors = false
+use_lld = true
+use_rtti = true
+
+extra_cflags = "-include /run/media/sebastian/2e638a7f-26db-4e89-9446-81d688464798/webrtc-bau/harmattan-schicht.h"
+extra_cxxflags = "-include /run/media/sebastian/2e638a7f-26db-4e89-9446-81d688464798/webrtc-bau/harmattan-schicht.h"
+
+
+# Bildschirmaufnahme brauchen wir nie, und die X11-Kopfdateien des
+# Sysroots sind von 2009.
+rtc_use_x11 = false
+rtc_use_x11_extensions = false
