@@ -48,12 +48,21 @@ pub async fn behandeln(lage: &Arc<Lage>, frage: &Value) -> Value {
             }
             Err(e) => Err(e),
         },
+        "call_mute" => {
+            let an = args.get("on").and_then(|x| x.as_bool()).unwrap_or(true);
+            crate::anrufweg::stummschalten(lage, an).await
+        }
         "call_video" => {
             let an = args.get("on").and_then(|x| x.as_bool()).unwrap_or(true);
             crate::anrufweg::kamera(lage, an).await
         }
         "call_accept" => crate::anrufweg::abheben(lage).await,
         "call_status" => crate::anrufweg::stand(lage).await,
+        // Kommt vom Tonprozess, nicht von der Oberflaeche: "verbindet",
+        // "verbunden", "gescheitert". Ohne diesen Zweig landete es als
+        // unbekannter Befehl, und die Oberflaeche erfuehre nie, ob die
+        // Leitung wirklich steht.
+        "call_state" => crate::anrufweg::zustand_melden(lage, args).await,
         "call_audio_check" => crate::anrufweg::tonprobe(lage).await,
         "call_signal" => {
             let daten = args.get("data").and_then(|x| x.as_str()).unwrap_or("");

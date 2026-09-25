@@ -17,6 +17,7 @@
 
 mod anruf;
 mod anrufweg;
+mod anrufzustand;
 mod befehle;
 mod formen;
 mod sitzung;
@@ -65,6 +66,18 @@ pub struct Lage {
     /// waeren auf diesem Geraet ohnehin nicht zu halten, und der
     /// Schluesseltausch haengt an einem Zustand je Seite.
     pub gespraech: Mutex<Option<anrufweg::Gespraech>>,
+    /// Der Draht zu allen offenen Verbindungen. Ereignisse, die nicht
+    /// aus dem Updatestrom kommen, gehen hier hinaus -- der Tonprozess
+    /// meldet zum Beispiel, ob die Leitung steht.
+    pub ruf: broadcast::Sender<String>,
+}
+
+impl Lage {
+    /// Ein Ereignis an die Oberflaeche. Haengt niemand dran, ist das
+    /// kein Fehler -- die Bruecke laeuft auch ohne offene App.
+    pub fn melden(&self, v: Value) {
+        let _ = self.ruf.send(zeile(v));
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -93,6 +106,9 @@ async fn lauf() -> Result<(), String> {
 
     // Vor allem anderen: nur eine Instanz.
     sperre::nehmen(&daten)?;
+    // Ein MCE-Halter, der einen Absturz ueberlebt hat, laesst das
+    // Telefon fuer immer glauben, es klingle.
+    anrufzustand::aufraeumen();
     protokoll_umlenken(&daten);
 
     // Beim Einschalten ist das Netz oft noch nicht da. Aufgeben waere
@@ -133,12 +149,19 @@ async fn lauf() -> Result<(), String> {
     let angemeldet = client.is_authorized().await.unwrap_or(false);
     eprintln!("== angemeldet: {angemeldet}");
 
+    // Ereignisse gehen an alle offenen Verbindungen -- die Oberflaeche
+    // und die Bruecke haengen gleichzeitig dran. Der Sender gehoert in
+    // die Lage, weil auch Befehle etwas zu melden haben koennen: der
+    // Tonprozess sagt ueber genau diesen Weg, ob die Leitung steht.
+    let (ruf, _) = broadcast::channel::<String>(256);
+
     let lage = Arc::new(Lage {
         verzeichnis: Verzeichnis::laden(&daten),
         stumm: Stummliste::laden(&daten),
         anmeldung: Mutex::new(sitzung::Anmeldung::neu(angemeldet)),
         einstellungen: Mutex::new(befehle::einstellungen_laden(&daten)),
         gespraech: Mutex::new(None),
+        ruf: ruf.clone(),
         client: client.clone(),
     });
 
@@ -154,10 +177,6 @@ async fn lauf() -> Result<(), String> {
     let horcher = UnixListener::bind(&socketpfad).map_err(|e| format!("bind: {e}"))?;
     setze_rechte(&socketpfad);
     eprintln!("== Socket: {}", socketpfad.display());
-
-    // Ereignisse gehen an alle offenen Verbindungen -- die Oberflaeche
-    // und die Bruecke haengen gleichzeitig dran.
-    let (ruf, _) = broadcast::channel::<String>(256);
 
     // Die Sitzung regelmaessig auf die Platte.
     //

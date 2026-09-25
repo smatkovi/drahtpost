@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdarg>
+#include <mutex>
 #include <functional>
 #include <cstring>
 #include <string>
@@ -42,6 +43,7 @@
 #include <rtc_base/logging.h>
 #include <cstdio>
 #include <cstdarg>
+#include <mutex>
 #include <functional>
 #include <rtc_base/time_utils.h>
 #include <libyuv/convert.h>
@@ -58,9 +60,15 @@ namespace tgcalls {
 /// 0x208). Wir brauchen den Umweg aber nicht -- an dieser Stelle haben
 /// wir das Bild ohnehin in der Hand, und zwar bevor tgcalls es
 /// zuschneidet.
+// Mit Sperre: gesetzt wird sie vom Faden, der den Anruf aufbaut und
+// abbaut, gerufen vom Lesefaden der Kamera. Eine std::function zu
+// ersetzen, waehrend ein anderer Faden sie aufruft, ist ein Wettlauf --
+// und einer, der als Absturz beim Auflegen endet.
+static std::mutex g_vorschau_sperre;
 static std::function<void(const webrtc::VideoFrame &)> g_vorschau;
 
 void kameraVorschau(std::function<void(const webrtc::VideoFrame &)> wohin) {
+    std::lock_guard<std::mutex> l(g_vorschau_sperre);
     g_vorschau = std::move(wohin);
 }
 
@@ -220,8 +228,11 @@ private:
                               .set_rotation(_drehung)
                               .set_timestamp_us(rtc::TimeMicros())
                               .build();
-            if (g_vorschau) {
-                g_vorschau(rahmen);
+            {
+                std::lock_guard<std::mutex> l(g_vorschau_sperre);
+                if (g_vorschau) {
+                    g_vorschau(rahmen);
+                }
             }
             senke->OnFrame(rahmen);
         }

@@ -15,10 +15,20 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <cerrno>
+#include <cstring>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 
 #include <pulse/error.h>
 #include <pulse/simple.h>
@@ -131,6 +141,53 @@ public:
     std::string letzterFehler() const { return fehler_; }
 
 private:
+    /// Dem Tonserver sagen, wozu der Strom da ist.
+    ///
+    /// Ohne diese Angabe landet alles auf sink.music -- der
+    /// Lautsprecher. Nokias Politikschicht routet einen Strom mit
+    /// media.role=phone auf den Hoerer, so wie sie es fuer die
+    /// Telefon-App tut. pa_simple nimmt keine Eigenschaftsliste
+    /// entgegen; libpulse liest sie aber aus der Umgebung, und das ist
+    /// hier der kurze Weg.
+    static void rolleSetzen() {
+        static bool getan = false;
+        if (!getan) {
+            setenv("PULSE_PROP", "media.role=phone", 1);
+            getan = true;
+        }
+    }
+
+    /// Den Tonfaden vordraengeln.
+    ///
+    /// PulseAudio laeuft mit nice -11 und Echtzeitprioritaet 5; unsere
+    /// Faeden liefen mit der Vorgabe. Auf einem Kern, auf dem daneben
+    /// kodiert wird, sind das die 57-ms-Ausreisser im Aufnahmetakt --
+    /// und ein ungleichmaessiger Takt laesst den Jitterpuffer der
+    /// Gegenstelle wachsen. Das hoert sie als Verzoegerung.
+    ///
+    /// Geht Echtzeit nicht (die Rechte dafuer haben wir vielleicht
+    /// nicht), bleibt nice. Beides zu versuchen kostet nichts; was
+    /// davon geklappt hat, steht danach im Protokoll.
+    static void vordraengeln(const char *wer) {
+        sched_param p{};
+        p.sched_priority = 4;   // eins unter PulseAudio
+        int fehler = pthread_setschedparam(pthread_self(), SCHED_FIFO, &p);
+        if (fehler == 0) {
+            std::fprintf(stderr, "[ton] %s laeuft in Echtzeit\n", wer);
+            std::fflush(stderr);
+            return;
+        }
+        errno = 0;
+        if (setpriority(PRIO_PROCESS, 0, -10) == 0) {
+            std::fprintf(stderr, "[ton] %s auf nice -10 (Echtzeit: %s)\n",
+                         wer, std::strerror(fehler));
+        } else {
+            std::fprintf(stderr, "[ton] %s bleibt gewoehnlich (Echtzeit: %s)\n",
+                         wer, std::strerror(fehler));
+        }
+        std::fflush(stderr);
+    }
+
     static pa_sample_spec form() {
         pa_sample_spec s{};
         s.format = PA_SAMPLE_S16LE;
@@ -155,6 +212,8 @@ private:
     }
 
     void aufnahmeschleife() {
+        rolleSetzen();
+        vordraengeln("Aufnahme");
         int fehler = 0;
         auto spez = form();
         auto attr = puffer(true);
@@ -183,15 +242,22 @@ private:
             // AEC und der Jitterpuffer rechnen damit. Geraten waere hier
             // schlechter als gemessen.
             pa_usec_t verzug = pa_simple_get_latency(s, &fehler);
+            takt_melden(verzug);
             uint32_t neu = 0;
+            // WebRTC will die GESAMTE Verzoegerung, nicht nur die der
+            // Aufnahme: Aufnahme plus Wiedergabe. Nur die halbe zu
+            // melden heisst, dass der Jitterpuffer der Gegenstelle
+            // falsch rechnet.
+            uint32_t ganz = (uint32_t)(verzug / 1000) + wiedergabeverzug_.load();
             w->RecordedDataIsAvailable(rahmen.data(), kSamplesJeRahmen, 2, kKanaele,
-                                       kRate, (uint32_t)(verzug / 1000), 0, 0,
-                                       false, neu);
+                                       kRate, ganz, 0, 0, false, neu);
         }
         pa_simple_free(s);
     }
 
     void wiedergabeschleife() {
+        rolleSetzen();
+        vordraengeln("Wiedergabe");
         int fehler = 0;
         auto spez = form();
         auto attr = puffer(false);
@@ -207,6 +273,7 @@ private:
         // Kanalzahl gesagt, aber ein Puffer, der genau passt, verzeiht
         // keinen Irrtum -- und ein Ueberlauf hier zerlegt den Haufen an
         // einer Stelle, die nichts mehr mit dem Ton zu tun hat.
+        int seit_messung = 0;
         std::vector<int16_t> rahmen(kSamplesJeRahmen * 2);
         while (spielt_) {
             size_t heraus = 0;
@@ -222,6 +289,13 @@ private:
             if (heraus != (size_t)kSamplesJeRahmen) {
                 std::memset(rahmen.data(), 0, kSamplesJeRahmen * 2);
             }
+            // Alle hundert Rahmen nachsehen, wie tief die Senke steht --
+            // oefter waere ein Rundgang zum Tonserver je Rahmen.
+            if (++seit_messung >= 100) {
+                seit_messung = 0;
+                pa_usec_t v = pa_simple_get_latency(s, &fehler);
+                wiedergabeverzug_.store((uint32_t)(v / 1000));
+            }
             if (pa_simple_write(s, rahmen.data(), kSamplesJeRahmen * 2, &fehler) < 0) {
                 fehler_ = std::string("Schreiben: ") + pa_strerror(fehler);
                 break;
@@ -231,12 +305,47 @@ private:
         pa_simple_free(s);
     }
 
+    /// Alle fuenf Sekunden eine Zeile ueber den Aufnahmetakt.
+    ///
+    /// Der Gegenstelle klang es verzoegert, und geraten haben wir
+    /// genug: was zaehlt, ist ob die Rahmen gleichmaessig kommen. Ein
+    /// Mittelwert von 10 ms bei grosser Streuung laesst den
+    /// Jitterpuffer der Gegenstelle wachsen -- und genau das hoert man
+    /// als Verzoegerung.
+    void takt_melden(pa_usec_t verzug) {
+        auto jetzt = std::chrono::steady_clock::now();
+        if (n_ > 0) {
+            double ms = std::chrono::duration<double, std::milli>(jetzt - letzte_).count();
+            summe_ += ms;
+            if (ms > gross_) gross_ = ms;
+            if (ms < klein_) klein_ = ms;
+        }
+        letzte_ = jetzt;
+        ++n_;
+        if (n_ >= 500) {
+            std::fprintf(stderr,
+                         "[ton] Aufnahme: %.2f ms im Mittel (%.2f bis %.2f), Verzug %lu ms\n",
+                         summe_ / (n_ - 1), klein_, gross_,
+                         (unsigned long)(verzug / 1000));
+            std::fflush(stderr);
+            n_ = 0;
+            summe_ = 0;
+            gross_ = 0;
+            klein_ = 1e9;
+        }
+    }
+
+    int n_ = 0;
+    double summe_ = 0, gross_ = 0, klein_ = 1e9;
+    std::chrono::steady_clock::time_point letzte_;
+
     const std::string quelle_;
     const std::string senke_;
     std::atomic<webrtc::AudioTransport *> weiter_{nullptr};
     std::atomic<bool> spielt_{false};
     std::atomic<bool> nimmt_auf_{false};
     std::atomic<bool> stumm_{false};
+    std::atomic<uint32_t> wiedergabeverzug_{0};
     std::string fehler_;
     std::thread wiedergabe_;
     std::thread aufnahme_;

@@ -30,9 +30,12 @@ use std::sync::Arc;
 
 use grammers_tl_types as tl;
 use serde_json::{json, Value};
+use std::process::Stdio;
+
 use tokio::io::AsyncWriteExt as _;
 
 use crate::anruf::{self, Tausch};
+use crate::anrufzustand;
 use crate::Lage;
 
 /// Wo ein Gespraech gerade steht.
@@ -558,17 +561,42 @@ async fn an_den_ton(was: &Value) -> bool {
             Err(_) if versuch == 0 && std::path::Path::new(TONPROGRAMM).exists() => {
                 let _ = std::fs::remove_file(&pfad);
                 eprintln!("== starte Tonprozess");
-                // std statt tokio::process: der Tonprozess wird nicht
-                // eingesammelt, sondern lebt fuer sich. tokio::process
-                // haenge ihn an einen Waechterfaden, den wir nicht
-                // brauchen -- und "process" ist ein Merkmal, das wir uns
-                // sonst nirgends erkaufen muessten.
+                // std statt tokio::process: "process" waere ein
+                // Merkmal, das wir uns sonst nirgends erkaufen muessten.
+                // Seine Ausgabe gehoert in eine Datei, nicht nach
+                // /dev/null. Beim ersten echten Anruf stuerzte er ab,
+                // und der Absturzmelder schrieb sein "Signal 11 bei
+                // pc=..." ins Nichts -- uebrig blieben zwei Zombies und
+                // keine Erklaerung.
+                let protokoll = crate::datenverzeichnis().join("ton.log");
+                let hin = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&protokoll);
+                let (aus, fehler) = match hin {
+                    Ok(f) => match f.try_clone() {
+                        Ok(g) => (Stdio::from(f), Stdio::from(g)),
+                        Err(_) => (Stdio::null(), Stdio::null()),
+                    },
+                    Err(_) => (Stdio::null(), Stdio::null()),
+                };
                 match std::process::Command::new(TONPROGRAMM)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
+                    .stdout(aus)
+                    .stderr(fehler)
                     .spawn()
                 {
-                    Ok(_) => {
+                    Ok(mut kind) => {
+                        // Einsammeln, sonst bleibt bei jedem Absturz ein
+                        // Zombie stehen -- nach drei Anrufen standen
+                        // zwei davon in der Prozessliste.
+                        std::thread::spawn(move || {
+                            match kind.wait() {
+                                Ok(stand) if !stand.success() => {
+                                    eprintln!("⚠ Tonprozess endete: {stand}");
+                                }
+                                _ => {}
+                            }
+                        });
                         // Er braucht einen Augenblick, bis der Socket
                         // steht. Warten ist hier richtig: die Alternative
                         // waere, den ersten Anruf stumm zu lassen.
@@ -592,6 +620,18 @@ async fn an_den_ton(was: &Value) -> bool {
         }
     }
     false
+}
+
+/// Was der Tonprozess ueber die Leitung meldet, an die Oberflaeche.
+pub async fn zustand_melden(lage: &Arc<Lage>, args: &Value) -> Result<Value, String> {
+    let zustand = args.get("state").and_then(|x| x.as_str()).unwrap_or("");
+    let id = args.get("call_id").and_then(|x| x.as_i64()).unwrap_or(0);
+    eprintln!("== Leitung: {zustand}");
+    lage.melden(json!({
+        "event": "call_state",
+        "data": {"call_id": id, "state": zustand},
+    }));
+    Ok(json!({"ok": true}))
 }
 
 /// Laeuft gerade ein Gespraech?
@@ -645,13 +685,28 @@ pub async fn kamera(lage: &Arc<Lage>, an: bool) -> Result<Value, String> {
     }
 }
 
+/// Das Mikrofon im laufenden Gespraech abschalten.
+pub async fn stummschalten(lage: &Arc<Lage>, an: bool) -> Result<Value, String> {
+    if lage.gespraech.lock().await.is_none() {
+        return Err("kein Gespraech".into());
+    }
+    if an_den_ton(&json!({"befehl": "stumm", "an": an})).await {
+        Ok(json!({"ok": true}))
+    } else {
+        Err("Tonprozess nicht erreichbar".into())
+    }
+}
+
 /// Ein Anruf hinaus.
 pub async fn starten(lage: &Arc<Lage>, kennung: i64, video: bool) -> Result<Value, String> {
     if lage.gespraech.lock().await.is_some() {
         return Err("es laeuft schon ein Gespraech".into());
     }
+    eprintln!("== Anruf hinaus an {kennung} (Video: {video})");
     let chat = crate::befehle::chat_oeffentlich(lage, kennung).await?;
     let g = anrufen(&lage.client, chat.to_input_user_lossy(), kennung, video).await?;
+    eprintln!("== requestCall angenommen, Gespraech {}", g.id);
+    anrufzustand::setzen("ringing");
     let antwort = json!({"ok": true, "call_id": g.id});
     *lage.gespraech.lock().await = Some(g);
     Ok(antwort)
@@ -679,6 +734,7 @@ pub async fn beenden(lage: &Arc<Lage>, grund: &str) -> Result<Value, String> {
         "disconnect" => tl::types::PhoneCallDiscardReasonDisconnect {}.into(),
         _ => tl::types::PhoneCallDiscardReasonHangup {}.into(),
     };
+    anrufzustand::setzen("none");
     let ergebnis = auflegen(&lage.client, &g, r, 0).await;
     an_den_ton(&json!({"befehl": "auflegen", "id": g.id})).await;
     ergebnis?;
@@ -698,6 +754,7 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
 
         // Jemand ruft uns an.
         P::Requested(r) => {
+            eprintln!("== Anruf herein von {} (Video: {})", r.admin_id, r.video);
             if lage.gespraech.lock().await.is_some() {
                 // Besetzt. Ohne diese Antwort klingelt es bei der
                 // Gegenstelle, bis sie von selbst aufgibt.
@@ -720,6 +777,7 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
                     let id = g.id;
                     let von = g.partner;
                     *lage.gespraech.lock().await = Some(g);
+                    anrufzustand::setzen("ringing");
                     vec![json!({
                         "event": "call_incoming",
                         "data": {"call_id": id, "from": von, "video": r.video},
@@ -731,6 +789,7 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
 
         // Die Gegenstelle hat abgehoben und zeigt ihr g_b.
         P::Accepted(a) => {
+            eprintln!("== Gegenstelle hat abgehoben, g_b ist da");
             let halter = lage.gespraech.lock().await;
             let Some(g) = halter.as_ref() else {
                 return vec![];
@@ -746,6 +805,7 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
 
         // Der Schluessel steht: ab hier redet der Ton.
         P::Call(c) => {
+            eprintln!("== Schluessel steht, {} Wege", c.connections.len());
             let halter = lage.gespraech.lock().await;
             let Some(g) = halter.as_ref() else {
                 return vec![];
@@ -766,6 +826,7 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
                 Err(e) => return vec![fehlerzeile(c.id, &e)],
             };
             let zeichen = anruf::pruefzeichen_stellen(&schluessel, &c.g_a_or_b, 333);
+            anrufzustand::setzen("active");
             an_den_ton(&json!({"befehl": "anrufen", "gespraech": beschreibung})).await;
             vec![json!({
                 "event": "call_ready",
@@ -778,10 +839,12 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
         }
 
         P::Discarded(d) => {
+            eprintln!("== Gespraech {} beendet", d.id);
             let mut halter = lage.gespraech.lock().await;
             if halter.as_ref().map(|g| g.id) == Some(d.id) {
                 halter.take();
             }
+            anrufzustand::setzen("none");
             an_den_ton(&json!({"befehl": "auflegen", "id": d.id})).await;
             vec![json!({
                 "event": "call_ended",
