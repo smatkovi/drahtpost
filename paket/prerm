@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
-for p in $(ps -eo pid,args 2>/dev/null | grep '[/]opt/drahtpost/drahtpost' | awk '{print $1}'); do
+# pidof statt ps|grep: BusyBox' ps kennt -eo nicht -- es druckt dann nur
+# "PID COMMAND", die Befehlszeile fehlt, das Muster trifft nie, und die
+# alte Fassung laeuft nach dem Auswechseln unbemerkt weiter, mit der
+# geloeschten Datei im Speicher. Genau das ist hier passiert. Und ein
+# Muster auf die Befehlszeile trifft ausserdem jede Shell, die zufaellig
+# das Wort enthaelt.
+for p in $(pidof drahtpost 2>/dev/null); do
     kill "$p" 2>/dev/null || true
 done
 exit 0
