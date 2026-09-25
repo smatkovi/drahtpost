@@ -79,5 +79,21 @@
 #endif
 
 
+/* aligned_alloc kam mit C11 und glibc 2.16; das glibc 2.10 von Harmattan
+   hat nur posix_memalign. libc++abi ruft ::aligned_alloc unbedingt auf.
+   Ausschliesslich fuer ARM: der Baurechner hat es laengst, und eine
+   zweite Erklaerung waere dort ein Fehler. */
+#if defined(__arm__)
+#include <stdlib.h>
+static inline void *aligned_alloc(size_t ausrichtung, size_t groesse) {
+    void *p = 0;
+    if (posix_memalign(&p, ausrichtung, groesse) != 0) {
+        return 0;
+    }
+    return p;
+}
+#endif
+
+
 #endif /* __cplusplus */
 #endif

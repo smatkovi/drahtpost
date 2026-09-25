@@ -37,7 +37,9 @@ fi
 # das, was "--enable-intrinsics" einschaltet, und decken die heissen
 # Stellen ab (celt_pitch_xcorr, NSQ).
 NEON="-DOPUS_ARM_MAY_HAVE_NEON_INTR -DOPUS_ARM_PRESUME_NEON_INTR"
-FAHNEN="-O3 -fno-math-errno $ARITHMETIK $NEON -DOPUS_BUILD -DUSE_ALLOCA -DHAVE_LRINTF \
+# -fPIC, weil alles andere (tg_owt, libc++) lageunabhaengig ist und der
+# Binder sonst R_ARM_MOVW_ABS_NC in einem PIE ablehnt.
+FAHNEN="-O3 -fPIC -fno-math-errno $ARITHMETIK $NEON -DOPUS_BUILD -DUSE_ALLOCA -DHAVE_LRINTF \
         -I. -Iinclude -Icelt -Isilk $IZUS"
 
 rm -f "$OUT"/*.o

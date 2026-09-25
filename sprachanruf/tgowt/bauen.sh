@@ -1,7 +1,7 @@
 #!/bin/sh
 # Baut tg_owt (Telegrams WebRTC-Abzug) fuer Harmattan.
 #
-#   tgowt/bauen.sh <tg_owt-Baum> <webrtc-src-Baum> <openssl-prefix>
+#   tgowt/bauen.sh <tg_owt-Baum> <webrtc-src-Baum> <openssl-prefix> [schicht]
 #
 # Warum tg_owt und nicht das Upstream-WebRTC, das schon gebaut ist: siehe
 # README, Abschnitt "tgcalls: gegen welches WebRTC?". Kurz: tgcalls spricht
@@ -13,17 +13,31 @@ set -e
 T=${1:?tg_owt-Baum fehlt}
 W=${2:?WebRTC-src-Baum fehlt}
 SSL=${3:?OpenSSL-Prefix fehlt}
+# Die Schicht ist die aus dem WebRTC-Bau: sie enthaelt auch die
+# V4L2-Kopfdateien, die webrtc/bauen.sh vom Baurechner kopiert -- die
+# liegen deshalb nicht im Quellbaum.
 SR=${SR:-$HOME/QtSDK/Madde/sysroots/harmattan_sysroot_10.2011.34-1_slim}
 HIER=$(cd "$(dirname "$0")" && pwd)
+SCHICHT=${4:-$HIER/../webrtc/schicht}
 AUS=${AUS:-$T/bau-harmattan}
 
 [ -f "$T/CMakeLists.txt" ] || { echo "kein tg_owt-Baum: $T" >&2; exit 1; }
 [ -f "$SSL/include/openssl/ssl.h" ] || { echo "kein OpenSSL: $SSL" >&2; exit 1; }
 
+# avconfig.h ist erzeugt, nicht Quelltext: in Chromiums ffmpeg-Abzug liegt
+# fuer jede Zielarchitektur eine eigene. Deshalb sind es beim ffmpeg zwei
+# Pfade -- die Abstimmung arm-neon passt genau auf den OMAP3630.
+#
+# TG_OWT_SPECIAL_TARGET ist der Schalter, der den "gepackten" Bau
+# abstellt. Gepackt heisst: OpenSSL, Opus und ffmpeg per pkg-config vom
+# Baurechner holen -- beim Kreuzbau genau falsch. Ungepackt nimmt tg_owt
+# die Kopfdateien, die wir nennen, und ueberlaesst das Binden dem
+# Programm. Der Name selbst wird sonst nirgends ausgewertet.
 cmake -S "$T" -B "$AUS" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$HIER/harmattan.cmake" \
-    -DWEBRTC_SRC="$W" -DSCHICHT="$HIER/../webrtc/schicht" -DSYSROOT="$SR" \
+    -DWEBRTC_SRC="$W" -DSCHICHT="$SCHICHT" -DSYSROOT="$SR" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DTG_OWT_SPECIAL_TARGET=harmattan \
     -DCMAKE_CXX_STANDARD=20 \
     -DBUILD_SHARED_LIBS=OFF \
     -DTG_OWT_BUILD_AUDIO_BACKENDS=OFF \
@@ -33,7 +47,9 @@ cmake -S "$T" -B "$AUS" -G Ninja \
     -DTG_OWT_ARCH_ARMV7_USE_NEON=ON \
     -DTG_OWT_OPENSSL_INCLUDE_PATH="$SSL/include" \
     -DTG_OWT_OPUS_INCLUDE_PATH="$W/third_party/opus/src/include" \
-    -DTG_OWT_FFMPEG_INCLUDE_PATH="$W/third_party/ffmpeg" \
+    -DTG_OWT_FFMPEG_INCLUDE_PATH="$W/third_party/ffmpeg/chromium/config/Chrome/linux/arm-neon;$W/third_party/ffmpeg" \
+    -DTG_OWT_OPENH264_INCLUDE_PATH="$W/third_party/openh264/src/codec/api" \
+    -DTG_OWT_LIBVPX_INCLUDE_PATH="$W/third_party/libvpx/source/libvpx" \
     -DTG_OWT_LIBJPEG_INCLUDE_PATH="$SR/usr/include"
 
 cmake --build "$AUS" -- -k 0

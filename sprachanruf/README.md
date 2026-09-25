@@ -236,3 +236,37 @@ Kompatibilitätsschicht der elf Lücken geht per `CMAKE_CXX_FLAGS` hinein,
 die libc++ und das clang bleiben die aus dem Upstream-Baum — der Baum
 bleibt also stehen, auch wenn `libwebrtc.a` selbst nicht mehr gebraucht
 wird.
+
+## tg_owt und tgcalls laufen auf der N950
+
+```
+libtg_owt.a    25,8 MB, 1340 Objekte
+libtgcalls.a    4,7 MB, 47 Dateien, keine einzige gescheitert
+tgcalls-probe  14,9 MB
+
+user@RM680:~$ ./tgcalls-probe
+Fassungen (7): 12.0.0 13.0.0 2.7.7 5.0.0 7.0.0 8.0.0 9.0.0
+Threads laufen, 2 ms
+```
+
+2.7.7 ist das alte Protokoll (libtgvoip-Ära), 5.0.0 bis 13.0.0 sind die
+WebRTC-Fassungen — dieselbe Bibliothek deckt beide Wege ab, die wir
+abgewogen hatten.
+
+Die Kompatibilitätsschicht musste nur um **eine zwölfte Lücke** wachsen:
+`aligned_alloc` kam mit C11 und glibc 2.16, Harmattan hat nur
+`posix_memalign`, und libc++abi ruft `::aligned_alloc` unbedingt auf. Alles
+andere aus dem Upstream-Bau trug unverändert — der tg_owt-Abzug ist älter
+und stolpert über weniger.
+
+### Was beim Binden noch dazukam
+
+| fehlte | woher |
+|---|---|
+| `crtbeginS.o`, `-lgcc` | clang bringt keine Anlaufdateien mit: `-B` auf die Kreuz-GCC, `-static-libgcc` (das Sysroot hat nur `libgcc_s.so.1`, nicht den Entwicklungsverweis) |
+| `libc++.a`, `libc++abi.a` | im Upstream-Baum für ARM **nicht** mitgebaut — `ninja buildtools/third_party/libc++:libc++` holt das nach |
+| Opus mit `-fPIC` | alles andere ist lageunabhängig, sonst lehnt lld `R_ARM_MOVW_ABS_NC` im PIE ab |
+| json11, zlib, libjpeg | json11 liegt in tgcalls selbst, die anderen beiden im Sysroot |
+| libvpx | aus dem Upstream-Bau: `ninja third_party/libvpx:libvpx` — für armv7+NEON schon eingerichtet. VP8 ist damit **echt** vorhanden |
+| openh264, ffmpeg | `video-attrappen.c`. Zwei weitere Kreuzbauten für einen Codec, den ein OMAP3630 in Software nicht in Echtzeit schafft; die Attrappen scheitern so, wie es die Schnittstelle vorsieht, und H.264 wird dann gar nicht erst als Fähigkeit gemeldet |
+| `/lib/ld-linux.so.3` | clang schreibt `ld-linux-armhf.so.3` hinein. Harmattan heißt `armel` und ist doch hart gleitkommig — die Shell meldet sonst „No such file or directory“ für eine Datei, die sichtbar da ist |
