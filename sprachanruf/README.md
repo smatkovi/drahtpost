@@ -369,3 +369,36 @@ Verzögerung von 29 ms sagt ihm auch, wie viel es ist.
   ist es nur an `/proc/<pid>/exe -> … (deleted)`. Deshalb macht
   `tools/installieren.sh` das Neustarten selbst — und weigert sich, wenn
   gerade ein Gespräch läuft.
+
+## Video: was es kostet
+
+`tgowt/videomessen.cpp` auf dem Gerät, bewegtes Bild (eine leere Fläche
+wäre geschönt — VP8 wird damit so schnell fertig, dass die Messung nichts
+mehr über ein Gespräch aussagt, in dem sich jemand bewegt):
+
+```
+                    kodieren            dekodieren
+VP8 176x144    7,0 ms   11 % Kern    1,1 ms    2 %
+VP8 320x240   17,2 ms   26 %         2,8 ms    4 %
+VP8 352x288   18,4 ms   28 %         4,4 ms    7 %
+VP8 640x480   40,4 ms   61 %        11,0 ms   16 %
+```
+
+Maßstab: bei 15 Bildern je Sekunde hat ein Bild 66,7 ms.
+
+Das ist **deutlich billiger, als ich erwartet hatte** — ich hatte Video
+zum Senden für aussichtslos gehalten und lag daneben. Ein Videoanruf in
+QVGA kostet zusammen rund 42 % eines Kerns:
+
+```
+26 %  VP8 senden       320x240 @15
+ 4 %  VP8 empfangen
+11 %  Opus             24 kbit/s, Komplexität 5
+ 1 %  Tonweg
+```
+
+Nicht gemessen und darum offen: die Kamera. Der N950 hat keine einfache
+V4L2-Aufnahme, sondern den OMAP3-ISP mit Media-Controller (`omap3_isp`,
+`smiapp` auf `/dev/video0…6`). WebRTCs `video_capture_v4l2` erwartet ein
+Gerät, dem man Format setzt und das dann losläuft — das ist hier nicht
+so. Der Weg führt über Harmattans eigene GStreamer-Kette.
