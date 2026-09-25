@@ -142,6 +142,13 @@ type sipBruecke struct {
 
 	angenommen bool
 	laeuft     bool
+	// Haben wir selbst beendet? Dann ist "aufgelegt" keine Meldung ueber
+	// das Telefon, sondern das Echo unseres eigenen Befehls -- und wer
+	// darauf hin auflegt, legt den Anruf auf, den er gerade annimmt.
+	selbstBeendet bool
+	// Der letzte Status, den das Telefon geschickt hat. Daran haengt, ob
+	// abgelehnt oder nur nicht abgehoben wurde.
+	letzterCode int
 
 	// Wo das Telefon erreichbar ist, aus seinem REGISTER.
 	kontakt     *sip.Uri
@@ -398,6 +405,8 @@ func (b *sipBruecke) klingeln(name string) error {
 	b.sitzung = sitzung
 	b.abbruch = abbrechen
 	b.angenommen = false
+	b.selbstBeendet = false
+	b.letzterCode = 0
 	b.mu.Unlock()
 
 	go func() {
@@ -408,6 +417,9 @@ func (b *sipBruecke) klingeln(name string) error {
 				// ohne das laesst sich "es klingelt nicht" nicht von "es
 				// klingelt und niemand hebt ab" unterscheiden.
 				melden("Telefon antwortet %d %s", res.StatusCode, res.Reason)
+				b.mu.Lock()
+				b.letzterCode = res.StatusCode
+				b.mu.Unlock()
 				if res.StatusCode == 200 {
 					melden("Antwort des Telefons: %s", strings.Join(strings.Fields(string(res.Body())), " "))
 					b.gegenstelleAusSDP(string(res.Body()))
@@ -416,8 +428,28 @@ func (b *sipBruecke) klingeln(name string) error {
 			},
 		})
 		if err != nil {
+			// Haben wir das Klingeln selbst abgebrochen, ist das keine
+			// Meldung ueber das Telefon. Wer hier trotzdem "aufgelegt"
+			// meldet, legt den Anruf auf, der gerade anderswo angenommen
+			// wurde -- der Abbruch und die Annahme kaemen einander in die
+			// Quere, und zwar in jeder Reihenfolge.
+			if warteCtx.Err() != nil {
+				melden("klingeln von uns abgebrochen")
+				return
+			}
+			b.mu.Lock()
+			code := b.letzterCode
+			b.mu.Unlock()
 			melden("nicht angenommen: %v", err)
-			b.ereignis("aufgelegt")
+			// 486 "Busy Here" und 603 "Decline" heisst abgelehnt; alles
+			// andere heisst, es hat niemand abgehoben. Fuer den Anrufer
+			// ist das der Unterschied zwischen "nochmal probieren" und
+			// "nicht jetzt".
+			if code >= 400 {
+				b.ereignis("aufgelegt abgelehnt")
+			} else {
+				b.ereignis("aufgelegt")
+			}
 			return
 		}
 		if err = sitzung.Ack(context.Background()); err != nil {
@@ -435,8 +467,13 @@ func (b *sipBruecke) klingeln(name string) error {
 
 		<-sitzung.Context().Done()
 		b.mu.Lock()
+		selbst := b.selbstBeendet
 		b.laeuft = false
 		b.mu.Unlock()
+		if selbst {
+			// Wir haben das BYE geschickt, nicht das Telefon.
+			return
+		}
 		melden("Telefon hat aufgelegt")
 		b.ereignis("aufgelegt")
 	}()
@@ -513,6 +550,7 @@ func (b *sipBruecke) auflegen(grund string) {
 	ss := b.serverSitzung
 	stand := b.angenommen
 	b.serverSitzung = nil
+	b.selbstBeendet = true
 	b.mu.Unlock()
 	if ss != nil {
 		if stand {

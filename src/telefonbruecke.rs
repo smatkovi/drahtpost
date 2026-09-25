@@ -224,8 +224,12 @@ async fn antwort_lesen(lage: &Arc<Lage>, zeile: &str) {
         // auch dann auf und meldet nur, dass es nichts zu tun gab.
         "aufgelegt" => {
             GESPRAECH_STEHT.store(false, Ordering::Relaxed);
+            // Abgelehnt oder nicht abgehoben? Der Anrufer sieht den
+            // Unterschied, und er entscheidet, ob er es gleich nochmal
+            // versucht.
+            let grund = if wovon == "abgelehnt" { "busy" } else { "hangup" };
             if lage.gespraech.lock().await.is_some() {
-                if let Err(e) = crate::anrufweg::beenden(lage, "hangup").await {
+                if let Err(e) = crate::anrufweg::beenden(lage, grund).await {
                     eprintln!("⚠ Auflegen nach dem Telefon: {e}");
                 }
                 lage.melden(json!({"event": "call_ended", "data": {"reason": "hangup"}}));

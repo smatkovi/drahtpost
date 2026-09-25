@@ -737,6 +737,19 @@ pub async fn starten(lage: &Arc<Lage>, kennung: i64, video: bool) -> Result<Valu
 
 /// Abheben.
 pub async fn abheben(lage: &Arc<Lage>) -> Result<Value, String> {
+    // Abgehoben werden kann an zwei Stellen: in der Anrufansicht des
+    // Telefons und in der App. Geschieht es in der App, waehrend das
+    // Telefon noch klingelt, muss dort Schluss sein -- sonst klingelt es
+    // weiter, waehrend das Gespraech laengst laeuft, und der Ton ginge
+    // an eine Seite, die nie abgehoben hat.
+    //
+    // Kommt der Aufruf von der Bruecke selbst, steht das Gespraech dort
+    // schon; dann ist hier nichts zu tun.
+    if telefonbruecke::telefon_da() && !telefonbruecke::im_gespraech() {
+        eprintln!("== in der App abgehoben -- das Telefon hoert auf zu klingeln");
+        telefonbruecke::auflegen("anderswo-angenommen");
+        anrufzustand::setzen("active");
+    }
     let gespraech = lage.gespraech.lock().await;
     let g = gespraech.as_ref().ok_or("kein Gespraech zum Abheben")?;
     if g.ausgehend {
@@ -757,7 +770,12 @@ pub async fn beenden(lage: &Arc<Lage>, grund: &str) -> Result<Value, String> {
         "disconnect" => tl::types::PhoneCallDiscardReasonDisconnect {}.into(),
         _ => tl::types::PhoneCallDiscardReasonHangup {}.into(),
     };
-    anrufzustand::setzen("none");
+    // Den MCE-Anrufzustand nur zuruecknehmen, wenn wir ihn auch halten.
+    // Fuehrt die Telefon-App das Gespraech, gehoert er ihr -- und ein
+    // "keine Anrufe" von uns kaeme mitten in ihren Abbau hinein.
+    if !telefonbruecke::im_gespraech() {
+        anrufzustand::setzen("none");
+    }
     telefonbruecke::auflegen("beendet");
     let ergebnis = auflegen(&lage.client, &g, r, 0).await;
     an_den_ton(&json!({"befehl": "auflegen", "id": g.id})).await;
@@ -891,7 +909,9 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
             if halter.as_ref().map(|g| g.id) == Some(d.id) {
                 halter.take();
             }
-            anrufzustand::setzen("none");
+            if !telefonbruecke::im_gespraech() {
+                anrufzustand::setzen("none");
+            }
             telefonbruecke::auflegen("beendet");
             an_den_ton(&json!({"befehl": "auflegen", "id": d.id})).await;
             vec![json!({
