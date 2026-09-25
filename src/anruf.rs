@@ -25,12 +25,36 @@ use sha1::Digest as _;
 
 /// Die Protokollangaben, die wir dem Server nennen.
 ///
-/// Stufe 92 ist, was unser libtgvoip 2.5 spricht (`GetConnectionMaxLayer`
-/// gibt sie aus). Die Versionsliste nennt zusaetzlich 2.4.4, die
-/// verbreitete Fassung der libtgvoip-Zeit -- ein Server, der nur die
-/// kennt, findet so trotzdem etwas Bekanntes.
+/// `max_layer` 92 ist die letzte Stufe des alten Protokolls; sie steht
+/// weiter drin, weil sehr alte Gegenstellen nur danach schauen. Was
+/// heute wirklich entscheidet, ist `library_versions`.
+///
+/// Die Liste ist genau das, was unser tgcalls auf dem Geraet meldet --
+/// nachgemessen, nicht abgeschrieben:
+///
+/// ```text
+/// user@RM680:~$ ./tgcalls-probe
+/// Fassungen (7): 12.0.0 13.0.0 2.7.7 5.0.0 7.0.0 8.0.0 9.0.0
+/// ```
+///
+/// Hier stehen sie in unserer Vorzugsreihenfolge, die neueste zuerst.
+/// 2.7.7 ist das alte Protokoll und bleibt als letzter Rueckfall dabei.
 pub const PROTOKOLL_STUFE: i32 = 92;
-pub const BIBLIOTHEKSFASSUNGEN: [&str; 2] = ["2.4.4", "2.5"];
+pub const MINDESTSTUFE: i32 = 65;
+pub const BIBLIOTHEKSFASSUNGEN: [&str; 7] =
+    ["13.0.0", "12.0.0", "9.0.0", "8.0.0", "7.0.0", "5.0.0", "2.7.7"];
+
+/// Welche Fassung mit dieser Gegenstelle gesprochen wird.
+///
+/// Die Gegenstelle nennt ihre Liste in ihrer eigenen Vorzugsreihenfolge.
+/// Wir gehen unsere durch und nehmen die erste, die sie auch kennt --
+/// so bestimmt die neuere Seite nicht ueber die aeltere hinweg.
+pub fn fassung_waehlen(gegenstelle: &[String]) -> Option<&'static str> {
+    BIBLIOTHEKSFASSUNGEN
+        .iter()
+        .find(|unsere| gegenstelle.iter().any(|ihre| ihre == *unsere))
+        .copied()
+}
 
 /// Der kleinste erlaubte Abstand zu den Raendern.
 ///
@@ -218,6 +242,27 @@ mod tests {
         for s in a {
             assert!(s < 333);
         }
+    }
+
+    /// Die Fassung ist die erste unserer Liste, die auch die
+    /// Gegenstelle kennt -- und nichts, wenn es keine gibt.
+    #[test]
+    fn fassung_ist_die_beste_gemeinsame() {
+        let alle: Vec<String> = BIBLIOTHEKSFASSUNGEN.iter().map(|s| s.to_string()).collect();
+        assert_eq!(fassung_waehlen(&alle), Some("13.0.0"));
+
+        // Eine Gegenstelle, die nur das Alte kann.
+        let alt = vec!["2.7.7".to_string(), "2.4.4".to_string()];
+        assert_eq!(fassung_waehlen(&alt), Some("2.7.7"));
+
+        // Eine, die nur etwas Mittleres kann: nicht die neueste, die
+        // wir haetten, sondern die beste gemeinsame.
+        let mitte = vec!["9.0.0".to_string(), "8.0.0".to_string()];
+        assert_eq!(fassung_waehlen(&mitte), Some("9.0.0"));
+
+        // Und eine, mit der es nichts gemeinsam gibt.
+        assert_eq!(fassung_waehlen(&["4.0.0".to_string()]), None);
+        assert_eq!(fassung_waehlen(&[]), None);
     }
 
     /// Eine Potenz muss auf 256 Bytes aufgefuellt werden, sonst stimmt
