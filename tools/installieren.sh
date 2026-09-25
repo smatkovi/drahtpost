@@ -18,10 +18,24 @@ SSH="ssh -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedAlgorithms=+ssh-rsa -i $HO
 SCP="scp -q -oHostKeyAlgorithms=+ssh-rsa -oPubkeyAcceptedAlgorithms=+ssh-rsa -i $HOME/.ssh/id_rsa_n9"
 
 # Nie waehrend eines Gespraechs: ein Austausch mitten im Anruf legt ihn.
-if $SSH 'pidof tonprozess > /dev/null' 2>/dev/null; then
-    echo "✗ es laeuft gerade ein Gespraech -- spaeter" >&2
-    exit 1
-fi
+# Gefragt wird die Drahtpost selbst -- ein laufender Tonprozess ist noch
+# kein Gespraech, der wird auch fuer die Tonprobe gestartet.
+STAND=$($SSH 'python2.6 -c "
+import socket, json
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect(\"/home/user/.pytelegram/daemon.sock\")
+    s.send(json.dumps({\"cmd\": \"call_status\", \"args\": {}}) + \"\n\")
+    print s.recv(400)
+except Exception:
+    print \"{}\"
+"' 2>/dev/null)
+case "$STAND" in
+    *'"active":true'*)
+        echo "✗ es laeuft gerade ein Gespraech -- spaeter" >&2
+        exit 1
+        ;;
+esac
 
 sh tools/build.sh
 sh paket/build-deb.sh "$VER" > /dev/null

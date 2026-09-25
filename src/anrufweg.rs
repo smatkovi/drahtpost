@@ -594,6 +594,25 @@ async fn an_den_ton(was: &Value) -> bool {
     false
 }
 
+/// Laeuft gerade ein Gespraech?
+///
+/// Die Frage stellt nicht nur die Oberflaeche, sondern auch das
+/// Installationsskript: einen Austausch mitten im Anruf hat es schon
+/// gegeben, und er legt ihn.
+pub async fn stand(lage: &Arc<Lage>) -> Result<Value, String> {
+    let halter = lage.gespraech.lock().await;
+    Ok(match halter.as_ref() {
+        Some(g) => json!({
+            "active": true,
+            "call_id": g.id,
+            "outgoing": g.ausgehend,
+            "video": g.video,
+            "peer": g.partner,
+        }),
+        None => json!({"active": false}),
+    })
+}
+
 /// Laesst sich der Ton ueberhaupt erreichen?
 ///
 /// Ohne diesen Befehl zeigt sich der Weg vom Daemon zum Tonprozess erst
