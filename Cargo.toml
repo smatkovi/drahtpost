@@ -23,6 +23,14 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # ist eine SQLite-Datei. Danach ruehrt der Daemon sie nie wieder an.
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Fuer Sprachanrufe: der Diffie-Hellman-Tausch rechnet mit 2048 Bit, und
+# Fingerabdruck wie Pruefzeichen haengen an SHA1 und SHA256.
+num-bigint = { version = "0.4", default-features = false, features = ["rand"] }
+num-traits = { version = "0.2", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+rand = "0.8"
+
 [profile.release]
 strip = true
 opt-level = "z"
