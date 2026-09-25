@@ -28,7 +28,7 @@ SR=${SR:-$HOME/QtSDK/Madde/sysroots/harmattan_sysroot_10.2011.34-1_slim}
 CXX=$W/third_party/llvm-build/Release+Asserts/bin/clang++
 AR=$W/third_party/llvm-build/Release+Asserts/bin/llvm-ar
 
-HART="--target=arm-linux-gnueabihf -march=armv7-a -mfloat-abi=hard -mfpu=neon -mthumb"
+HART="--target=arm-linux-gnueabihf -march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -mthumb"
 LIBCPP="-nostdinc++ -isystem $W/third_party/libc++/src/include -isystem $W/third_party/libc++abi/src/include -I$W/buildtools/third_party/libc++ -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS"
 
 # Die Vorgaben von tg_owt fuer die Benutzer der Bibliothek stehen in
@@ -38,7 +38,22 @@ DEFS="-DWEBRTC_POSIX -DWEBRTC_LINUX -DWEBRTC_ARCH_ARM -DWEBRTC_ARCH_ARM_V7 -DWEB
 
 IZUS="-I$TG -I$TG/tgcalls -I$O/src -I$O/src/third_party/abseil-cpp -I$O/src/third_party/libyuv/include -I$O/src/third_party/crc32c/src/include -I$O/src/third_party/libsrtp/include -I$O/src/third_party/libsrtp/crypto/include -I$O/src/rtc_base/third_party -isystem $SSL/include -isystem $W/third_party/opus/src/include -isystem $W/third_party/ffmpeg/chromium/config/Chrome/linux/arm-neon -isystem $W/third_party/ffmpeg"
 
-FAHNEN="$HART --sysroot=$SR -include $SCHICHT/../harmattan-schicht.h -isystem $SCHICHT $LIBCPP -std=c++20 -O2 -fPIC -fno-strict-aliasing -fvisibility=hidden $DEFS $IZUS -Wno-everything"
+FAHNEN="$HART --sysroot=$SR -include $SCHICHT/../harmattan-schicht.h -isystem $SCHICHT $LIBCPP -std=c++20 -O3 -fPIC -fno-strict-aliasing -fvisibility=hidden $DEFS $IZUS -Wno-everything"
+
+# Die Flicken auf den Abzug legen. Schlaegt einer fehl, hat sich tgcalls
+# an der Stelle geaendert -- dann soll der Bau abbrechen und nicht still
+# das Falsche uebersetzen.
+for f in "$HIER"/flicken/*.patch; do
+    [ -f "$f" ] || continue
+    if patch -d "$TG" -p1 -N -r - --silent < "$f"; then
+        echo "geflickt: $(basename "$f")"
+    elif patch -d "$TG" -p1 -R --dry-run --silent < "$f" > /dev/null 2>&1; then
+        echo "schon geflickt: $(basename "$f")"
+    else
+        echo "Flicken passt nicht mehr: $(basename "$f")" >&2
+        exit 1
+    fi
+done
 
 mkdir -p "$AUS"
 QUELLEN=$(ls $TG/tgcalls/*.cpp $TG/tgcalls/utils/*.cpp $TG/tgcalls/v2/*.cpp $TG/tgcalls/platform/tdesktop/*.cpp $TG/tgcalls/desktop_capturer/*.cpp $TG/tgcalls/third-party/json11.cpp 2>/dev/null | grep -v Test)

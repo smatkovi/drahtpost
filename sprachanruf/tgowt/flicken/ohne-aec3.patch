@@ -1,0 +1,33 @@
+Kein AEC3 auf der N950.
+
+Gemessen auf dem Geraet (tgowt/audio-messen.cpp, 48 kHz mono, 10-ms-Rahmen,
+beide Seiten wie AEC3 es braucht):
+
+    AEC3 + NS + AGC + HPF    6,253 ms je 10-ms-Rahmen   62,5 % eines Kerns
+    AECM (Handy-Modus) + NS  1,075 ms                   10,7 %
+    alles aus                0,101 ms                    1,0 %
+
+62,5 % eines Kerns fuer die Echoausloeschung allein ist auf einem
+Cortex-A8 mit 1 GHz nicht zu haben -- daneben muessen Opus, Pulseaudio,
+die SIP-Bruecke und der Anrufdienst noch laufen.
+
+Es waere ohnehin doppelt gemoppelt: der Ton kommt ueber source.voice,
+also durch Nokias eigene Sprachaufbereitung samt Echoausloeschung.
+
+Umschaltbar geblieben ist es trotzdem: TGCALLS_APM=1 in der Umgebung
+schaltet WebRTCs Aufbereitung wieder ein, ohne neu zu bauen.
+
+--- a/tgcalls/v2/InstanceV2Impl.cpp
++++ b/tgcalls/v2/InstanceV2Impl.cpp
+@@ -130,7 +130,10 @@
+     _channelManager(channelManager),
+     _audioSource(audioSource) {
+         cricket::AudioOptions audioOptions;
+-        bool _disableOutgoingAudioProcessing = false;
++        // Auf Harmattan aus: AEC3 kostet 62,5 % eines Kerns, und der Ton
++        // kommt ohnehin schon durch Nokias Sprachaufbereitung.
++        const char *apmUmgebung = getenv("TGCALLS_APM");
++        bool _disableOutgoingAudioProcessing = !(apmUmgebung && apmUmgebung[0] == '1');
+ 
+         if (_disableOutgoingAudioProcessing) {
+             audioOptions.echo_cancellation = false;

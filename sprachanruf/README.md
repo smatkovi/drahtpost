@@ -270,3 +270,44 @@ und stolpert über weniger.
 | libvpx | aus dem Upstream-Bau: `ninja third_party/libvpx:libvpx` — für armv7+NEON schon eingerichtet. VP8 ist damit **echt** vorhanden |
 | openh264, ffmpeg | `video-attrappen.c`. Zwei weitere Kreuzbauten für einen Codec, den ein OMAP3630 in Software nicht in Echtzeit schafft; die Attrappen scheitern so, wie es die Schnittstelle vorsieht, und H.264 wird dann gar nicht erst als Fähigkeit gemeldet |
 | `/lib/ld-linux.so.3` | clang schreibt `ld-linux-armhf.so.3` hinein. Harmattan heißt `armel` und ist doch hart gleitkommig — die Shell meldet sonst „No such file or directory“ für eine Datei, die sichtbar da ist |
+
+## Reicht die Rechenleistung? Gemessen, nicht geschätzt
+
+`tgowt/audio-messen.cpp` auf der N950, 48 kHz mono, echte Sprachform
+(Stille ließe die Rauschunterdrückung in einen billigen Sonderfall laufen),
+AEC3 mit **beiden** Seiten — ohne die Wiedergabeseite hat es nichts zu
+vergleichen und die Messung wäre geschönt:
+
+```
+APM: AEC3 + NS + AGC + HPF     6,25 ms je 10-ms-Rahmen  =  62,5 % eines Kerns
+APM: AECM (Handy-Modus) + NS   1,08 ms                  =  10,7 %
+APM: alles aus                 0,10 ms                  =   1,0 %
+Opus 24 kbit/s, Komplexität 5  2,13 ms je 20-ms-Rahmen  =  10,7 %
+Opus 24 kbit/s, Komplexität 0  0,99 ms                  =   4,9 %
+```
+
+AEC3 allein frisst zwei Drittel des Kerns — daneben müssen Opus,
+PulseAudio, die SIP-Brücke und der Anrufdienst noch laufen. Es wäre
+ohnehin doppelt gemoppelt: der Ton kommt über `source.voice`, also durch
+Nokias eigene Sprachaufbereitung samt Echoauslöschung.
+
+`tgowt/flicken/ohne-aec3.patch` schaltet es ab und lässt es über
+`TGCALLS_APM=1` wieder einschaltbar. Damit liegt der ganze Tonweg bei
+**rund 6 bis 12 % eines Kerns** — das geht.
+
+### Was O3 und Cortex-A8-Abstimmung gebracht haben: nichts
+
+Alles noch einmal mit `-O3` und `-mtune=cortex-a8` gebaut (1341
+Übersetzungseinheiten):
+
+```
+AEC3 + NS + AGC + HPF   6,25 → 6,39 ms
+AECM + NS               1,08 → 1,09 ms
+alles aus               0,101 → 0,101 ms
+```
+
+Kein Unterschied außer Rauschen. Das ist kein Argument gegen die Fahnen —
+sie bleiben drin —, sondern eines dafür, wo die Zeit wirklich hingeht:
+diese Pfade sind schon NEON, und an handgeschriebenen Vektorschleifen hat
+die Ablaufplanung des Übersetzers nichts mehr zu verbessern. Die
+entscheidende Entscheidung war AEC3, nicht die Optimierungsstufe.

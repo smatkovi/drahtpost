@@ -20,6 +20,10 @@ SCHICHT=${6:-$HIER/../webrtc/schicht}
 GCC=${GCC:-/tmp/xgcc-harmattan/lib/gcc/arm-none-linux-gnueabi/14.2.0}
 SR=${SR:-$HOME/QtSDK/Madde/sysroots/harmattan_sysroot_10.2011.34-1_slim}
 AUS=${AUS:-$O/bau-harmattan/probe}
+# Welche Probe gebaut wird -- tgcalls-probe.cpp beweist das Binden,
+# audio-messen.cpp misst, was die Tonaufbereitung kostet.
+QUELLE=${QUELLE:-$HIER/tgcalls-probe.cpp}
+NAME=$(basename "$QUELLE" .cpp)
 
 CXX=$W/third_party/llvm-build/Release+Asserts/bin/clang++
 CPP=$W/out/harmattan/obj/buildtools/third_party/libc++/libc++.a
@@ -29,7 +33,7 @@ CPP=$W/out/harmattan/obj/buildtools/third_party/libc++/libc++.a
 VPX=$W/out/harmattan/obj/third_party/libvpx
 CPPABI=$W/out/harmattan/obj/buildtools/third_party/libc++abi/libc++abi.a
 
-HART="--target=arm-linux-gnueabihf -march=armv7-a -mfloat-abi=hard -mfpu=neon -mthumb"
+HART="--target=arm-linux-gnueabihf -march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -mthumb"
 LIBCPP="-nostdinc++ -isystem $W/third_party/libc++/src/include -isystem $W/third_party/libc++abi/src/include -I$W/buildtools/third_party/libc++ -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE -D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS -D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS"
 
 mkdir -p "$AUS"
@@ -43,7 +47,8 @@ $CXX $HART --sysroot=$SR -include $SCHICHT/../harmattan-schicht.h -isystem $SCHI
     $LIBCPP -std=c++20 -O2 \
     -DWEBRTC_POSIX -DWEBRTC_LINUX -DWEBRTC_ARCH_ARM -DWEBRTC_ARCH_ARM_V7 -DWEBRTC_HAS_NEON \
     -I$TG -I$TG/tgcalls -I$O/src -I$O/src/third_party/abseil-cpp \
-    "$HIER/tgcalls-probe.cpp" -o "$AUS/tgcalls-probe" \
+    -I$W/third_party/opus/src/include \
+    "$QUELLE" -o "$AUS/$NAME" \
     -fuse-ld=lld -Wl,--error-limit=0 -Wl,--dynamic-linker=/lib/ld-linux.so.3 -nostdlib++ -static-libgcc -B"$GCC" -L"$GCC" \
     -Wl,--whole-archive "$O/bau-harmattan/tgcalls/libtgcalls.a" -Wl,--no-whole-archive \
     "$O/bau-harmattan/libtg_owt.a" \
@@ -53,4 +58,4 @@ $CXX $HART --sysroot=$SR -include $SCHICHT/../harmattan-schicht.h -isystem $SCHI
     "$CPP" "$CPPABI" \
     -L"$SR/usr/lib" -lz -ljpeg -lpthread -ldl -lm -lrt
 
-ls -la "$AUS/tgcalls-probe"
+ls -la "$AUS/$NAME"

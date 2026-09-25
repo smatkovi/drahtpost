@@ -34,7 +34,10 @@ find_program(CMAKE_RANLIB NAMES llvm-ranlib ranlib REQUIRED)
 # arch.cmake fragen ohnehin nur den Uebersetzer.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-set(HART "--target=arm-linux-gnueabihf -march=armv7-a -mfloat-abi=hard -mfpu=neon -mthumb")
+# -mtune=cortex-a8 aendert nichts am Befehlssatz, nur an der
+# Reihenfolge: der A8 ist in Reihe und bestraft jeden Stau. -march
+# bleibt armv7-a, damit die ABI dieselbe ist wie in libwebrtc.
+set(HART "--target=arm-linux-gnueabihf -march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -mthumb")
 set(GEMEINSAM "${HART} --sysroot=${SYSROOT} -include ${SCHICHT}/../harmattan-schicht.h -isystem ${SCHICHT} -fno-strict-aliasing -D__STDC_FORMAT_MACROS -D__STDC_CONSTANT_MACROS")
 
 # Dieselben libc++-Schalter wie im WebRTC-Bau. Weichen sie ab, passen die
