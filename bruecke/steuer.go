@@ -66,6 +66,16 @@ func steuerungStarten(pfad string, b *sipBruecke) (*steuerung, error) {
 			}
 			melden("drahtpost verbunden")
 			s.anmelden(c)
+			// Den Stand gleich mitgeben. Verbindet sich drahtpost neu --
+			// nach einem Neustart oder einem Abriss --, erfuehre es sonst
+			// erst beim naechsten REGISTER, dass ein Telefon da ist, und
+			// liesse bis dahin jeden Anruf am Lautsprecher landen.
+			b.mu.Lock()
+			da := b.registriert
+			b.mu.Unlock()
+			if da {
+				_, _ = fmt.Fprintln(c, "ereignis registriert")
+			}
 			go func() {
 				defer func() { s.abmelden(c); _ = c.Close() }()
 				leser := bufio.NewScanner(c)

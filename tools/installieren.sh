@@ -38,6 +38,7 @@ case "$STAND" in
 esac
 
 sh tools/build.sh
+sh tools/bruecke-bauen.sh > /dev/null
 sh paket/build-deb.sh "$VER" > /dev/null
 PAKETE="drahtpost_${VER}_armel.deb"
 if [ -n "$TONVER" ]; then
@@ -51,7 +52,11 @@ $SCP $PAKETE "user@$GERAET:/home/user/"
 FERN=""
 for p in $PAKETE; do FERN="$FERN /home/user/$p"; done
 $SSH "sudo dpkg -i $FERN 2>&1 | grep -iE 'Setting up|error'"
-$SSH 'sudo sh -c "kill $(pidof drahtpost tonprozess 2>/dev/null)" 2>/dev/null; sleep 2
-      cd /home/user && nohup /opt/drahtpost/drahtpost > /dev/null 2>&1 &
-      sleep 8; pidof drahtpost > /dev/null && echo "== Drahtpost laeuft" || echo "✗ Drahtpost startet nicht"'
+# Die Ausgabe gehoert in eine Datei, nicht nach /dev/null. Beim ersten
+# echten Anruf ging genau das schief: warum er nicht hinausging, stand in
+# einer Zeile, die nirgends landete.
+$SSH 'sudo sh -c "kill $(pidof drahtpost tonprozess drahtpost-bruecke 2>/dev/null)" 2>/dev/null; sleep 2
+      cd /home/user && nohup /opt/drahtpost/drahtpost >> /home/user/.pytelegram/drahtpost.log 2>&1 &
+      sleep 8; pidof drahtpost > /dev/null && echo "== Drahtpost laeuft" || echo "✗ Drahtpost startet nicht"
+      pidof drahtpost-bruecke > /dev/null && echo "== SIP-Bruecke laeuft" || echo "⚠ SIP-Bruecke laeuft nicht"'
 $SSH 'for p in $(pidof drahtpost); do ls -la /proc/$p/exe; done'

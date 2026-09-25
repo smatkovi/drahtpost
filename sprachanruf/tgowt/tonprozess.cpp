@@ -46,6 +46,7 @@
 
 #include "bildablage.h"
 #include "pulsgeraet.h"
+#include "sipgeraet.h"
 
 namespace {
 
@@ -147,7 +148,7 @@ std::shared_ptr<drahtpost::Bildablage> vorschauAnlegen() {
 
 struct Gespraech {
     std::unique_ptr<tgcalls::Instance> instanz;
-    rtc::scoped_refptr<drahtpost::PulsGeraet> geraet;
+    rtc::scoped_refptr<drahtpost::Tongeraet> geraet;
     std::shared_ptr<tgcalls::VideoCaptureInterface> kamera;
     std::shared_ptr<drahtpost::Bildablage> bild;
     std::shared_ptr<drahtpost::Bildablage> eigenbild;
@@ -268,7 +269,26 @@ void anrufen(const json11::Json &b) {
         }
     }
 
-    auto geraet = drahtpost::neuesGeraet("", "");
+    // Der Weg des Tons: ueber die Bruecke in die Telefon-App, wenn sie
+    // erreichbar ist, sonst geradewegs an PulseAudio.
+    //
+    // Nicht andersherum und nicht mit Vorrang fuer PulseAudio: der
+    // Umweg ueber die Telefon-App ist der bessere Weg, nicht der
+    // Ausweichweg. Nur wenn die Bruecke nicht laeuft -- kein Telefon
+    // angemeldet, Konto abgeschaltet --, faellt es auf den alten Weg
+    // zurueck, und dann steht der Grund im Protokoll.
+    const std::string brueckenpfad =
+        std::string(std::getenv("HOME") ? std::getenv("HOME") : "") +
+        "/.pytelegram/tonbruecke.sock";
+    rtc::scoped_refptr<drahtpost::Tongeraet> geraet;
+    if (b["ton"].string_value() != "puls" &&
+        drahtpost::SipGeraet::erreichbar(brueckenpfad)) {
+        sagen("== Ton ueber die SIP-Bruecke (Telefon-App)");
+        geraet = drahtpost::neuesSipGeraet(brueckenpfad);
+    } else {
+        sagen("== Ton ueber PulseAudio (Bruecke nicht erreichbar)");
+        geraet = drahtpost::neuesGeraet("", "");
+    }
     d.createAudioDeviceModule =
         [geraet](webrtc::TaskQueueFactory *) { return geraet; };
 

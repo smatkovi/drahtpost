@@ -277,7 +277,6 @@ func (b *sipBruecke) beiRegister(req *sip.Request, tx sip.ServerTransaction) {
 		genannt := uri.String()
 		uri, geaendert := kontaktZiel(uri, req.Source())
 		b.mu.Lock()
-		erste := !b.registriert
 		b.kontakt = &uri
 		b.registriert = true
 		b.mu.Unlock()
@@ -286,14 +285,15 @@ func (b *sipBruecke) beiRegister(req *sip.Request, tx sip.ServerTransaction) {
 		} else {
 			melden("Telefon registriert als %s", uri.String())
 		}
-		if erste {
-			b.ereignis("registriert")
-		}
+		b.ereignis("registriert")
 	}
 	antwort := sip.NewResponseFromRequest(req, 200, "OK", nil)
-	// Lange genug, dass das Telefon nicht staendig neu anklopft, kurz
-	// genug, dass ein Neustart auffaellt.
-	antwort.AppendHeader(sip.NewHeader("Expires", "600"))
+	// Zwei Minuten, nicht zehn. Nach einem Neustart der Bruecke ist die
+	// Anmeldung weg, und das Telefon merkt das erst beim naechsten
+	// Anklopfen -- bis dahin klingelt nichts und der Anruf faellt auf
+	// PulseAudio zurueck. Zehn Minuten Fenster dafuer sind zu viel; auf
+	// Loopback kostet das haeufigere Anklopfen nichts.
+	antwort.AppendHeader(sip.NewHeader("Expires", "120"))
 	_ = tx.Respond(antwort)
 }
 

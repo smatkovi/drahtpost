@@ -9,4 +9,14 @@ set -e
 for p in $(pidof drahtpost 2>/dev/null); do
     kill "$p" 2>/dev/null || true
 done
+for p in $(pidof drahtpost-bruecke 2>/dev/null); do
+    kill "$p" 2>/dev/null || true
+done
+
+# Das SIP-Konto nur beim endgueltigen Entfernen, nicht beim Auswechseln:
+# sonst waere es nach jedem Update weg.
+if [ "$1" = "remove" ] && [ -x /usr/bin/telegram-anrufe-einrichten ]; then
+    /usr/bin/telegram-anrufe-einrichten remove || true
+fi
+
 exit 0

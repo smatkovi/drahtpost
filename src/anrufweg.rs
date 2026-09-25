@@ -36,6 +36,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::anruf::{self, Tausch};
 use crate::anrufzustand;
+use crate::telefonbruecke;
 use crate::Lage;
 
 /// Wo ein Gespraech gerade steht.
@@ -334,6 +335,28 @@ pub fn uebergabe(
         "p2p_erlaubt": ruf.p2p_allowed,
         "wege": wege,
     }))
+}
+
+/// Der Name, der in der Anrufansicht stehen soll.
+///
+/// Eine Kennung waere dort nutzlos -- man sieht sie im Sperrbildschirm und
+/// weiss nicht, wer anruft. Laesst sich der Name nicht aufloesen, bleibt
+/// die Kennung, denn irgendetwas muss dort stehen.
+async fn anrufername(lage: &Arc<Lage>, kennung: i64) -> String {
+    let Ok(gepackt) = crate::befehle::chat_oeffentlich(lage, kennung).await else {
+        return kennung.to_string();
+    };
+    match lage.client.unpack_chat(gepackt).await {
+        Ok(c) => {
+            let n = c.name().trim().to_string();
+            if n.is_empty() {
+                kennung.to_string()
+            } else {
+                n
+            }
+        }
+        Err(_) => kennung.to_string(),
+    }
 }
 
 fn hex(b: &[u8]) -> String {
@@ -735,6 +758,7 @@ pub async fn beenden(lage: &Arc<Lage>, grund: &str) -> Result<Value, String> {
         _ => tl::types::PhoneCallDiscardReasonHangup {}.into(),
     };
     anrufzustand::setzen("none");
+    telefonbruecke::auflegen("beendet");
     let ergebnis = auflegen(&lage.client, &g, r, 0).await;
     an_den_ton(&json!({"befehl": "auflegen", "id": g.id})).await;
     ergebnis?;
@@ -777,7 +801,20 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
                     let id = g.id;
                     let von = g.partner;
                     *lage.gespraech.lock().await = Some(g);
-                    anrufzustand::setzen("ringing");
+                    // Das Telefon klingeln lassen -- in seiner eigenen
+                    // Anrufansicht. Angenommen wird erst, wenn es meldet,
+                    // dass abgehoben wurde; wer den Telegram-Anruf schon
+                    // hier annaehme, liesse die Gegenstelle ins Leere
+                    // reden, bis jemand das Telefon erreicht.
+                    let name = anrufername(lage, von).await;
+                    if telefonbruecke::klingeln(&name) {
+                        // Der Anrufzustand gehoert dann der Telefonie des
+                        // Systems. Ihn daneben selbst zu halten hiesse,
+                        // zwei Anrufe zu fuehren -- und der Klingelton
+                        // kaeme zweimal.
+                    } else {
+                        anrufzustand::setzen("ringing");
+                    }
                     vec![json!({
                         "event": "call_incoming",
                         "data": {"call_id": id, "from": von, "video": r.video},
@@ -826,7 +863,17 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
                 Err(e) => return vec![fehlerzeile(c.id, &e)],
             };
             let zeichen = anruf::pruefzeichen_stellen(&schluessel, &c.g_a_or_b, 333);
-            anrufzustand::setzen("active");
+            // Wohin der Ton geht, haengt daran, ob die Telefon-App das
+            // Gespraech fuehrt. Tut sie es, holt sich der Tonprozess
+            // seinen Takt von ihrem RTP; tut sie es nicht, wartete er
+            // auf Rahmen, die nie kaemen -- also dann PulseAudio.
+            let mut beschreibung = beschreibung;
+            if telefonbruecke::im_gespraech() {
+                beschreibung["ton"] = json!("sip");
+            } else {
+                beschreibung["ton"] = json!("puls");
+                anrufzustand::setzen("active");
+            }
             an_den_ton(&json!({"befehl": "anrufen", "gespraech": beschreibung})).await;
             vec![json!({
                 "event": "call_ready",
@@ -845,6 +892,7 @@ pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> 
                 halter.take();
             }
             anrufzustand::setzen("none");
+            telefonbruecke::auflegen("beendet");
             an_den_ton(&json!({"befehl": "auflegen", "id": d.id})).await;
             vec![json!({
                 "event": "call_ended",

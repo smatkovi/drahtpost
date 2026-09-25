@@ -18,6 +18,7 @@
 mod anruf;
 mod anrufweg;
 mod anrufzustand;
+mod telefonbruecke;
 mod befehle;
 mod formen;
 mod sitzung;
@@ -164,6 +165,12 @@ async fn lauf() -> Result<(), String> {
         ruf: ruf.clone(),
         client: client.clone(),
     });
+
+    // Die Leitung zur SIP-Bruecke. Sie haelt sich selbst: ist die Bruecke
+    // nicht da, wird sie gestartet, und faellt sie aus, wird neu
+    // verbunden. Scheitert beides, telefoniert man wie zuvor ueber
+    // PulseAudio -- nur eben ueber den Lautsprecher und ohne Anrufansicht.
+    telefonbruecke::starten(lage.clone());
 
     // Der Socket. Ein altes, verwaistes Exemplar liegt nach einem
     // Absturz noch da und wuerde jeden Verbindungsversuch mit

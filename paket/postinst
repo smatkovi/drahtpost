@@ -20,4 +20,29 @@ for p in $(pidof drahtpost 2>/dev/null); do
     kill "$p" 2>/dev/null || true
 done
 
+# --- Anrufe in der Anrufansicht des Telefons -------------------------
+#
+# Der Name muss auf die Loopback-Schnittstelle zeigen: die
+# Kontoverwaltung nimmt als SIP-Adresse nur etwas, das wie eine
+# Mailadresse aussieht, und sonst faende sofiasip den Wirt nicht.
+if ! grep -q "telegram\.local" /etc/hosts 2>/dev/null; then
+    echo "127.0.0.1 telegram.local" >> /etc/hosts
+    echo "telegram.local in /etc/hosts eingetragen"
+fi
+
+# Das SIP-Konto anlegen. Das Skript holt sich den Sitzungsbus selbst --
+# von hier aus laeuft es als root und haette sonst keinen -- und ruehrt
+# ein bestehendes Konto nicht an.
+if [ -x /usr/bin/telegram-anrufe-einrichten ]; then
+    /usr/bin/telegram-anrufe-einrichten add || true
+fi
+
+# Und die Bruecke neu starten, falls eine alte Fassung laeuft: sonst
+# liefe sie mit der geloeschten Datei weiter. drahtpost startet sie von
+# selbst wieder, sobald sie gebraucht wird.
+for p in $(pidof drahtpost-bruecke 2>/dev/null); do
+    echo "beende alte SIP-Bruecke $p"
+    kill "$p" 2>/dev/null || true
+done
+
 exit 0

@@ -466,3 +466,89 @@ unabgespeckte Datei.
 
 Ein Sprung nach `0x208` ist ein virtueller Aufruf auf einem Zeiger, der
 keiner ist — und `Marshal(rtc::Thread*)` sagt dann auch gleich, welcher.
+
+## Der Ton gehört nicht uns
+
+Nach dem ersten echten Anruf standen drei Beschwerden im Raum, und zwei
+davon hatten dieselbe Ursache: *"es ist am Lautsprecher"* und *"ich sehe
+die Anrufansicht nicht"*. Beides ließ sich einzeln behandeln — die
+Hörmuschel über MCE und `media.role=phone`, die Anrufansicht als eigene
+QML-Seite — und beides wäre eine Nachbildung dessen geblieben, was das
+Gerät schon mitbringt.
+
+Harmattan bringt `telepathy-sofiasip` mit. Das N9/N950 kann also
+SIP-Teilnehmer sein, und ein SIP-Anruf läuft durch die **systemeigene**
+Anrufansicht: Klingeln am Sperrbildschirm, Annehmen ohne die App zu
+öffnen, Näherungssensor, Lautstärketasten, Hörmuschel. Nichts davon
+müssen wir bauen. Es kostet einen kleinen SIP-Server:
+
+```
+Telefon (telepathy-sofiasip)  <--SIP/RTP-->  bruecke/  <-->  tonprozess
+    meldet sich bei 127.0.0.1:5062                    PCM über Unix-Socket
+```
+
+Der Bauplan stammt aus `harbour-whatsapp/backend/sipbridge_meego.go`, wo
+er sich bewährt hat; übernommen sind die Teile, die dort Fehler gekostet
+haben: symmetrisches RTP (wohin der Ton geht, sagen die Pakete des
+Telefons, nicht seine SDP), der Kontakt aus der Quelle der Anmeldung
+statt aus dem Kontakt-Kopf, und CANCEL statt BYE, solange es noch
+klingelt.
+
+**Port 5062, nicht 5060** — dort sitzt schon die WhatsApp-Brücke. Zwei
+`sofiasip`-Konten mit verschiedenen Proxy-Ports bestehen nebeneinander.
+
+### Die Reihenfolge beim Abheben
+
+Der Telegram-Anruf wird **erst** angenommen, wenn die Brücke meldet, dass
+in der Anrufansicht abgehoben wurde — nicht, wenn es zu klingeln beginnt.
+Wer das vorzieht, hat den Anruf angenommen, während das Telefon noch
+klingelt: die Gegenstelle redet dann ins Leere, bis jemand hingeht.
+
+### Der Takt
+
+Die Brücke schreibt zwei 10-ms-Rahmen in den Socket, sobald ein
+RTP-Paket des Telefons ankommt — alle 20 ms, weil dessen Kodierer an der
+Tonhardware hängt. Der Tonprozess liest blockierend und hängt damit an
+derselben Uhr; auf jeden gelesenen Rahmen folgt genau ein geschriebener,
+im selben Durchgang. Keine eigene Zeitschleife, kein zweiter Faden, der
+wegdriften könnte.
+
+Gemessen auf dem Gerät, mit einer Probe, die die Rahmen zurückspiegelt
+(man hört sich selbst — das braucht kein zweites Konto):
+
+```
+500 Rahmen in 4,83 s (103,5/s, Soll 100)
+… 33 s lang, dabei 50 Pakete je Sekunde in jede Richtung
+```
+
+### Drei Fallen
+
+* **`accept4` gibt es auf dem 2.6.32-Kern nicht**, und modernes Go hat
+  den Rückfall entfernt, als es die Mindestanforderung auf Kernel 3.2
+  anhob. Jeder `Accept` scheitert mit *"function not implemented"* — und
+  zwar leise: `connect` gelingt, weil die Verbindung im Rückstau liegt,
+  nur angenommen wird sie nie. `bruecke/lauschen.go` ruft `accept` roh
+  auf (ARM-EABI 285). Dieselbe Lösung steht in
+  `harbour-whatsapp/backend/listen_meego.go`, dort für TCP.
+
+* **Ein eigener `From`-Kopf braucht ein eigenes `tag`.** Den Kopf
+  brauchen wir, damit in der Anrufansicht der Name des Anrufers steht und
+  nicht "telegram". Ohne `tag` klingelte es, man hob ab — und im selben
+  Augenblick war das Gespräch weg: *"missing tag param in From header"*.
+  sipgo setzt das `tag` nur in den Kopf, den es selbst baut.
+
+* **`mc-tool` nimmt `bool:loose-routing=true` nicht an** — weder beim
+  Anlegen noch per `update`; es bleibt `false`. Über Loopback ohne Proxy
+  ist das bisher folgenlos geblieben.
+
+### Was bleibt
+
+PulseAudio bleibt als Rückfall (`pulsgeraet.h`): meldet sich kein Telefon
+an der Brücke an, telefoniert man wie zuvor — über den Lautsprecher und
+ohne Anrufansicht. Der Tonprozess entscheidet das je Anruf, drahtpost
+sagt ihm mit `"ton": "sip"` oder `"puls"`, was gilt.
+
+Ausgehende Anrufe nehmen noch den alten Weg. Damit auch sie in der
+Anrufansicht landen, müsste drahtpost das Telefon wählen lassen
+(`ChannelDispatcher.EnsureChannel` auf das SIP-Konto); das INVITE käme
+dann bei der Brücke an, die das schon beantworten kann.

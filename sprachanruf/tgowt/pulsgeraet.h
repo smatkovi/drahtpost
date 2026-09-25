@@ -1,4 +1,9 @@
-// Das Tongeraet fuer WebRTC auf der N950: PulseAudio, sonst nichts.
+// Das Tongeraet fuer WebRTC auf der N950: geradewegs an PulseAudio.
+//
+// Das ist der Rueckfall, nicht der Regelweg -- der laeuft seit der
+// SIP-Bruecke ueber die Telefon-App (sipgeraet.h). Hierher kommt man nur,
+// wenn sich kein Telefon an der Bruecke angemeldet hat; dann telefoniert
+// man wie zuvor, also ueber den Lautsprecher und ohne Anrufansicht.
 //
 // tg_owt ist mit TG_OWT_BUILD_AUDIO_BACKENDS=OFF gebaut -- absichtlich,
 // die eigenen Hintergruende von WebRTC sind laut den Entwicklern selbst
@@ -34,7 +39,8 @@
 #include <pulse/simple.h>
 
 #include <api/make_ref_counted.h>
-#include <modules/audio_device/include/audio_device_default.h>
+
+#include "tongeraet.h"
 
 namespace drahtpost {
 
@@ -47,8 +53,7 @@ constexpr int kKanaele = 1;
 constexpr int kRahmenMs = 10;
 constexpr int kSamplesJeRahmen = kRate / 1000 * kRahmenMs; // 480
 
-class PulsGeraet
-    : public webrtc::webrtc_impl::AudioDeviceModuleDefault<webrtc::AudioDeviceModule> {
+class PulsGeraet : public Tongeraet {
 public:
     PulsGeraet(std::string quelle, std::string senke)
         : quelle_(std::move(quelle)), senke_(std::move(senke)) {}
@@ -138,7 +143,7 @@ public:
     }
 
     /// Was zuletzt schiefging -- der Tonprozess schreibt es ins Protokoll.
-    std::string letzterFehler() const { return fehler_; }
+    std::string letzterFehler() const override { return fehler_; }
 
 private:
     /// Dem Tonserver sagen, wozu der Strom da ist.
