@@ -1,0 +1,11 @@
+Package: drahtpost-ton
+Version: @VERSION@
+Section: user/network
+Priority: optional
+Architecture: armel
+Depends: drahtpost
+Maintainer: smatkovi <sebastian.matkovich@gmail.com>
+Description: Sprachanrufe fuer die Drahtpost
+ tgcalls auf tg_owt (Telegrams WebRTC), fuer Harmattan uebersetzt. Die
+ Drahtpost handelt den Anruf aus und startet diesen Prozess, sobald einer
+ zustande kommt; der Ton geht ueber PulseAudio.

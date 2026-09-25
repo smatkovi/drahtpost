@@ -10,6 +10,8 @@ QUELLE=${QUELLE:-$HOME/sfos-browser-next-140/esr115/rust182/vendor/openssl-src-1
 SR=$HOME/QtSDK/Madde/sysroots/harmattan_sysroot_10.2011.34-1_slim
 BAU=${1:-/run/media/sebastian/2e638a7f-26db-4e89-9446-81d688464798/webrtc-bau/openssl-bau}
 ZIEL=$BAU/fertig
+# Die Kreuz-GCC; der Tarball dazu liegt auf dem Laptop in
+# ~/ps/toolchains -- /tmp ist auf dem Baurechner ein tmpfs.
 X=/tmp/xgcc-harmattan/bin/arm-none-linux-gnueabi
 
 rm -rf "$BAU"; mkdir -p "$BAU"

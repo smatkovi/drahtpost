@@ -13,6 +13,8 @@ ART=${2:-fixed}     # fixed oder float
 # "Tag_ABI_VFP_args: VFP registers"). Fuer C und C++ gilt also die harte
 # Kette; weich war nur noetig, wo Go mitspielt -- dessen ARM-Konvention
 # reicht Gleitkommazahlen in Kernregistern.
+# Kreuz-GCC aus /tmp; der Tarball liegt auf dem Laptop in
+# ~/ps/toolchains (auf dem Baurechner ist /tmp ein tmpfs).
 CC="${CC:-/tmp/xgcc-harmattan/bin/arm-none-linux-gnueabi-gcc --sysroot=$SR -march=armv7-a -mfpu=neon}"
 
 mkdir -p "$OUT"

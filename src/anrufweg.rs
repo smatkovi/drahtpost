@@ -526,16 +526,78 @@ pub fn ton_socket() -> std::path::PathBuf {
     crate::datenverzeichnis().join("ton.sock")
 }
 
-async fn an_den_ton(was: &Value) {
+/// Wo der Tonprozess liegt.
+pub const TONPROGRAMM: &str = "/opt/drahtpost/tonprozess";
+
+async fn an_den_ton(was: &Value) -> bool {
     let pfad = ton_socket();
-    match tokio::net::UnixStream::connect(&pfad).await {
-        Ok(mut strom) => {
-            let zeile = format!("{was}\n");
-            if let Err(e) = strom.write_all(zeile.as_bytes()).await {
-                eprintln!("⚠ Tonprozess: {e}");
+    for versuch in 0..2 {
+        match tokio::net::UnixStream::connect(&pfad).await {
+            Ok(mut strom) => {
+                let zeile = format!("{was}\n");
+                if let Err(e) = strom.write_all(zeile.as_bytes()).await {
+                    eprintln!("⚠ Tonprozess: {e}");
+                    return false;
+                }
+                return true;
+            }
+            // Beim ersten Fehlschlag den Tonprozess starten -- wie die
+            // Nachrichtenbruecke es mit uns macht. Er laeuft nicht die
+            // ganze Zeit mit: 15 MB WebRTC im Speicher zu halten, waehrend
+            // niemand telefoniert, waere auf einem Geraet mit 1 GB nicht
+            // zu bezahlen.
+            Err(_) if versuch == 0 && std::path::Path::new(TONPROGRAMM).exists() => {
+                let _ = std::fs::remove_file(&pfad);
+                eprintln!("== starte Tonprozess");
+                // std statt tokio::process: der Tonprozess wird nicht
+                // eingesammelt, sondern lebt fuer sich. tokio::process
+                // haenge ihn an einen Waechterfaden, den wir nicht
+                // brauchen -- und "process" ist ein Merkmal, das wir uns
+                // sonst nirgends erkaufen muessten.
+                match std::process::Command::new(TONPROGRAMM)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(_) => {
+                        // Er braucht einen Augenblick, bis der Socket
+                        // steht. Warten ist hier richtig: die Alternative
+                        // waere, den ersten Anruf stumm zu lassen.
+                        for _ in 0..40 {
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            if pfad.exists() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("⚠ Tonprozess startet nicht: {e}");
+                        return false;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("⚠ Tonprozess nicht erreichbar ({}): {e}", pfad.display());
+                return false;
             }
         }
-        Err(e) => eprintln!("⚠ Tonprozess nicht erreichbar ({}): {e}", pfad.display()),
+    }
+    false
+}
+
+/// Laesst sich der Ton ueberhaupt erreichen?
+///
+/// Ohne diesen Befehl zeigt sich der Weg vom Daemon zum Tonprozess erst
+/// beim ersten echten Anruf -- und ein Fehler dort ist ein Gespraech, das
+/// zustande kommt und still bleibt. Genau die Sorte Fehler, die man nicht
+/// erst am Telefon bemerken will.
+pub async fn tonprobe(lage: &Arc<Lage>) -> Result<Value, String> {
+    let _ = lage;
+    let da = an_den_ton(&json!({"befehl": "probe"})).await;
+    if da {
+        Ok(json!({"ok": true, "socket": ton_socket().to_string_lossy()}))
+    } else {
+        Err(format!("Tonprozess nicht erreichbar ({})", ton_socket().display()))
     }
 }
 

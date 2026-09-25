@@ -17,6 +17,8 @@ SCHICHT=${6:-$HIER/../webrtc/schicht}
 #
 # clang bringt keine Anlaufdateien und keine libgcc mit -- die kommen aus
 # der Kreuz-GCC. Ohne sie fehlen crtbeginS.o und -lgcc.
+# Der Tarball dazu liegt auf dem Laptop in ~/ps/toolchains -- auf dem
+# Baurechner ist /tmp ein tmpfs und nach dem Neustart leer.
 GCC=${GCC:-/tmp/xgcc-harmattan/lib/gcc/arm-none-linux-gnueabi/14.2.0}
 SR=${SR:-$HOME/QtSDK/Madde/sysroots/harmattan_sysroot_10.2011.34-1_slim}
 AUS=${AUS:-$O/bau-harmattan/probe}
@@ -56,6 +58,6 @@ $CXX $HART --sysroot=$SR -include $SCHICHT/../harmattan-schicht.h -isystem $SCHI
     "$AUS/video-attrappen.o" \
     "$OPUS/libopus.a" "$SSL/lib/libssl.a" "$SSL/lib/libcrypto.a" \
     "$CPP" "$CPPABI" \
-    -L"$SR/usr/lib" -lz -ljpeg -lpthread -ldl -lm -lrt
+    -L"$SR/usr/lib" -lz -ljpeg -lpulse-simple -lpulse -lpthread -ldl -lm -lrt
 
 ls -la "$AUS/$NAME"

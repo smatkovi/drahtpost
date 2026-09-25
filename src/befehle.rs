@@ -46,6 +46,7 @@ pub async fn behandeln(lage: &Arc<Lage>, frage: &Value) -> Value {
             Err(e) => Err(e),
         },
         "call_accept" => crate::anrufweg::abheben(lage).await,
+        "call_audio_check" => crate::anrufweg::tonprobe(lage).await,
         "call_signal" => {
             let daten = args.get("data").and_then(|x| x.as_str()).unwrap_or("");
             crate::anrufweg::signal_hinaus(lage, daten).await

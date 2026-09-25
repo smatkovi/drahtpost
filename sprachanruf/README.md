@@ -311,3 +311,61 @@ sie bleiben drin —, sondern eines dafür, wo die Zeit wirklich hingeht:
 diese Pfade sind schon NEON, und an handgeschriebenen Vektorschleifen hat
 die Ablaufplanung des Übersetzers nichts mehr zu verbessern. Die
 entscheidende Entscheidung war AEC3, nicht die Optimierungsstufe.
+
+## Der Tonprozess
+
+`tgowt/tonprozess.cpp` — ein eigenes Programm, nicht eine Bibliothek in
+der Drahtpost. Daran hängen 30 MB WebRTC und ein Dutzend Threads; stürzt
+der Ton ab, sollen Nachrichten weiter ankommen. Und die Drahtpost bleibt
+Rust.
+
+```
+~/.pytelegram/ton.sock      herein  {"befehl": "anrufen" | "signal" | "auflegen" | "stumm" | "probe"}
+~/.pytelegram/daemon.sock   hinaus  {"cmd": "call_signal" | "call_state"}
+```
+
+Gestartet wird er **bei Bedarf** von der Drahtpost — so wie die
+Nachrichtenbrücke die Drahtpost startet. 10 MB im Speicher zu halten,
+während niemand telefoniert, wäre auf einem Gerät mit 1 GB nicht zu
+bezahlen.
+
+### Das Tongerät
+
+`tgowt/pulsgeraet.h`. tg_owt ist mit `TG_OWT_BUILD_AUDIO_BACKENDS=OFF`
+gebaut — absichtlich, die eigenen Hintergründe von WebRTC sind laut den
+Entwicklern selbst nur zum Vorführen gedacht. Wer sie weglässt, muss
+aber eines mitbringen, sonst bekommt tgcalls eine Attrappe: **der Anruf
+kommt zustande und bleibt in beide Richtungen still** — von außen nicht
+vom ursprünglichen Fehlerbild zu unterscheiden.
+
+Der Takt kommt vom Ton. `pa_simple_read` blockiert, bis 10 ms Mikrofon
+da sind; `pa_simple_write`, bis 10 ms Platz ist. Kein `usleep`, keine
+eigene Uhr — dieselbe Lehre wie bei `ReadFrame` in der SIP-Brücke.
+
+Gemessen auf dem Gerät, ohne Anruf (`tonprozess --tonprobe 3`):
+
+```
+Aufnahme:   297 Rahmen, 142560 Samples, Verzug 29 ms
+Abstand:    10,01 ms im Mittel, 0,00 bis 62,07
+Wiedergabe: 299 Rahmen
+```
+
+Der Mittelwert stimmt auf ein Hundertstel. Die Streuung kommt daher, dass
+PulseAudio in Bruchstücken aufwacht und dann zwei Rahmen auf einmal
+liefert — WebRTCs eigener Puffer fängt das ab, und die gemeldete
+Verzögerung von 29 ms sagt ihm auch, wie viel es ist.
+
+### Zwei Fallen, beide auf dem Gerät gefunden
+
+* **Der Rückruf von `stop()` kommt auf einem Faden von tgcalls** und kann
+  eintreffen, wenn der Aufrufer längst weiter ist. Hing er an
+  Stapelspeicher, schrieb er in einen Rahmen, den es nicht mehr gab:
+  `*** glibc detected *** free(): invalid next size (fast) ***`. Der
+  Zustand gehört auf den Haufen und wird geteilt.
+* **Unter aegis greift der `kill` aus den Paketskripten nicht.** `pidof`
+  findet die laufende Fassung, `kill` meldet keinen Fehler — und der alte
+  Prozess lebt weiter, mit der gelöschten Datei im Speicher. Von außen
+  sieht die Installation gelungen aus, und die Änderung fehlt. Sichtbar
+  ist es nur an `/proc/<pid>/exe -> … (deleted)`. Deshalb macht
+  `tools/installieren.sh` das Neustarten selbst — und weigert sich, wenn
+  gerade ein Gespräch läuft.
