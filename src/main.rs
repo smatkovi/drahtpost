@@ -61,6 +61,10 @@ pub struct Lage {
     /// vergeben hat. Ohne es ist der Code wertlos.
     pub anmeldung: Mutex<sitzung::Anmeldung>,
     pub einstellungen: Mutex<Value>,
+    /// Das laufende Gespraech -- hoechstens eines. Zwei gleichzeitig
+    /// waeren auf diesem Geraet ohnehin nicht zu halten, und der
+    /// Schluesseltausch haengt an einem Zustand je Seite.
+    pub gespraech: Mutex<Option<anrufweg::Gespraech>>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -134,6 +138,7 @@ async fn lauf() -> Result<(), String> {
         stumm: Stummliste::laden(&daten),
         anmeldung: Mutex::new(sitzung::Anmeldung::neu(angemeldet)),
         einstellungen: Mutex::new(befehle::einstellungen_laden(&daten)),
+        gespraech: Mutex::new(None),
         client: client.clone(),
     });
 
@@ -349,6 +354,16 @@ async fn ereignis_zeilen(lage: &Arc<Lage>, u: Update) -> Vec<String> {
         // hier waere die Tabelle so alt wie der letzte Dialogdurchlauf,
         // und eine gerade stummgeschaltete Gruppe laendete den ganzen Tag
         // weiter in der Nachrichten-App.
+        // Sprachanrufe. Der Schluesseltausch macht hier seinen naechsten
+        // Schritt -- deshalb ist das mehr als eine Uebersetzung.
+        Update::Raw(tl::enums::Update::PhoneCall(u)) => {
+            for v in anrufweg::update(lage, &u.phone_call).await {
+                aus.push(zeile(v));
+            }
+        }
+        Update::Raw(tl::enums::Update::PhoneCallSignalingData(u)) => {
+            anrufweg::signal_herein(lage, u.phone_call_id, &u.data).await;
+        }
         Update::Raw(tl::enums::Update::NotifySettings(u)) => {
             let bis = stumm::bis_aus_einstellungen(&u.notify_settings);
             match &u.peer {

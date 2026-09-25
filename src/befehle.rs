@@ -39,6 +39,21 @@ pub async fn behandeln(lage: &Arc<Lage>, frage: &Value) -> Value {
         "get_settings" => Ok(json!({"settings": *lage.einstellungen.lock().await})),
         "set_setting" => einstellung_setzen(lage, args).await,
         "get_me" => ich(lage).await,
+        // Sprachanrufe. Die Arbeit steht in anrufweg.rs; hier ist nur
+        // der Namensschalter.
+        "call_start" => match kennung_aus(args) {
+            Ok(k) => crate::anrufweg::starten(lage, k).await,
+            Err(e) => Err(e),
+        },
+        "call_accept" => crate::anrufweg::abheben(lage).await,
+        "call_signal" => {
+            let daten = args.get("data").and_then(|x| x.as_str()).unwrap_or("");
+            crate::anrufweg::signal_hinaus(lage, daten).await
+        }
+        "call_hangup" => {
+            let grund = args.get("reason").and_then(|x| x.as_str()).unwrap_or("hangup");
+            crate::anrufweg::beenden(lage, grund).await
+        }
         _ => return json!({"error": format!("Unknown command: {befehl}")}),
     };
 
@@ -166,6 +181,10 @@ async fn dialoge(lage: &Arc<Lage>, args: &Value) -> Result<Value, String> {
 ///
 /// Steht er nicht im Verzeichnis, wird einmal ueber die Dialoge gegangen;
 /// das kostet Zeit, kommt aber nur beim allerersten Mal vor.
+pub async fn chat_oeffentlich(lage: &Arc<Lage>, kennung: i64) -> Result<PackedChat, String> {
+    chat(lage, kennung).await
+}
+
 async fn chat(lage: &Arc<Lage>, kennung: i64) -> Result<PackedChat, String> {
     if let Some(c) = lage.verzeichnis.finden(kennung) {
         return Ok(c);

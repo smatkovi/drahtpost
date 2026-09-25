@@ -30,8 +30,10 @@ use std::sync::Arc;
 
 use grammers_tl_types as tl;
 use serde_json::{json, Value};
+use tokio::io::AsyncWriteExt as _;
 
 use crate::anruf::{self, Tausch};
+use crate::Lage;
 
 /// Wo ein Gespraech gerade steht.
 pub struct Gespraech {
@@ -406,6 +408,17 @@ mod tests {
         assert_eq!(kennung(&weg), None);
     }
 
+    /// Hex hin und zurueck: der Rueckweg der Signalisierung geht als
+    /// Text durch den Befehlssocket, und ein Byte, das dabei kippt,
+    /// waere ein Gespraech, das nie zustande kommt.
+    #[test]
+    fn hex_hin_und_zurueck() {
+        let roh: Vec<u8> = (0u8..=255).collect();
+        assert_eq!(aus_hex(&hex(&roh)).unwrap(), roh);
+        assert!(aus_hex("abc").is_err());
+        assert!(aus_hex("zz").is_err());
+    }
+
     /// Die Uebergabe an den Tonprozess nennt die ausgehandelte Fassung
     /// und beide Arten von Weg.
     #[test]
@@ -497,4 +510,220 @@ mod tests {
         .into();
         assert!(uebergabe(&g, &[0u8; 256], &ruf).is_err());
     }
+}
+
+
+// --- Der Draht zur Oberflaeche und zum Ton ----------------------------
+
+/// Wo der Tonprozess horcht.
+///
+/// Laeuft er nicht, wird das Gespraech trotzdem aufgebaut und beendet --
+/// es ist dann nur still. Das ist besser, als die Signalisierung an einem
+/// fehlenden Socket scheitern zu lassen: die Gegenstelle bekommt so
+/// wenigstens ein ordentliches Auflegen und nicht eine Leitung, die
+/// klingelt und nie antwortet.
+pub fn ton_socket() -> std::path::PathBuf {
+    crate::datenverzeichnis().join("ton.sock")
+}
+
+async fn an_den_ton(was: &Value) {
+    let pfad = ton_socket();
+    match tokio::net::UnixStream::connect(&pfad).await {
+        Ok(mut strom) => {
+            let zeile = format!("{was}\n");
+            if let Err(e) = strom.write_all(zeile.as_bytes()).await {
+                eprintln!("⚠ Tonprozess: {e}");
+            }
+        }
+        Err(e) => eprintln!("⚠ Tonprozess nicht erreichbar ({}): {e}", pfad.display()),
+    }
+}
+
+/// Ein Anruf hinaus.
+pub async fn starten(lage: &Arc<Lage>, kennung: i64) -> Result<Value, String> {
+    if lage.gespraech.lock().await.is_some() {
+        return Err("es laeuft schon ein Gespraech".into());
+    }
+    let chat = crate::befehle::chat_oeffentlich(lage, kennung).await?;
+    let g = anrufen(&lage.client, chat.to_input_user_lossy(), kennung).await?;
+    let antwort = json!({"ok": true, "call_id": g.id});
+    *lage.gespraech.lock().await = Some(g);
+    Ok(antwort)
+}
+
+/// Abheben.
+pub async fn abheben(lage: &Arc<Lage>) -> Result<Value, String> {
+    let gespraech = lage.gespraech.lock().await;
+    let g = gespraech.as_ref().ok_or("kein Gespraech zum Abheben")?;
+    if g.ausgehend {
+        return Err("ein eigener Anruf wird nicht abgehoben".into());
+    }
+    annehmen(&lage.client, g).await?;
+    Ok(json!({"ok": true}))
+}
+
+/// Auflegen -- und zwar auch dann, wenn der Server das Gespraech schon
+/// vergessen hat. Was hier haengenbleibt, blockiert das naechste.
+pub async fn beenden(lage: &Arc<Lage>, grund: &str) -> Result<Value, String> {
+    let mut halter = lage.gespraech.lock().await;
+    let g = halter.take().ok_or("kein Gespraech zum Auflegen")?;
+    let r: tl::enums::PhoneCallDiscardReason = match grund {
+        "busy" => tl::types::PhoneCallDiscardReasonBusy {}.into(),
+        "missed" => tl::types::PhoneCallDiscardReasonMissed {}.into(),
+        "disconnect" => tl::types::PhoneCallDiscardReasonDisconnect {}.into(),
+        _ => tl::types::PhoneCallDiscardReasonHangup {}.into(),
+    };
+    let ergebnis = auflegen(&lage.client, &g, r, 0).await;
+    an_den_ton(&json!({"befehl": "auflegen", "id": g.id})).await;
+    ergebnis?;
+    Ok(json!({"ok": true}))
+}
+
+/// Ein `updatePhoneCall` in Ereigniszeilen uebersetzen -- und dabei den
+/// naechsten Schritt des Schluesseltauschs tun.
+pub async fn update(lage: &Arc<Lage>, ruf: &tl::enums::PhoneCall) -> Vec<Value> {
+    use tl::enums::PhoneCall as P;
+    match ruf {
+        // Wir haben angerufen, der Server hat es angenommen.
+        P::Waiting(w) => vec![json!({
+            "event": "call_state",
+            "data": {"call_id": w.id, "state": "waiting"},
+        })],
+
+        // Jemand ruft uns an.
+        P::Requested(r) => {
+            if lage.gespraech.lock().await.is_some() {
+                // Besetzt. Ohne diese Antwort klingelt es bei der
+                // Gegenstelle, bis sie von selbst aufgibt.
+                let zeiger: tl::enums::InputPhoneCall =
+                    tl::types::InputPhoneCall { id: r.id, access_hash: r.access_hash }.into();
+                let _ = lage
+                    .client
+                    .invoke(&tl::functions::phone::DiscardCall {
+                        video: false,
+                        peer: zeiger,
+                        duration: 0,
+                        reason: tl::types::PhoneCallDiscardReasonBusy {}.into(),
+                        connection_id: 0,
+                    })
+                    .await;
+                return vec![];
+            }
+            match eingehend(&lage.client, r).await {
+                Ok(g) => {
+                    let id = g.id;
+                    let von = g.partner;
+                    *lage.gespraech.lock().await = Some(g);
+                    vec![json!({
+                        "event": "call_incoming",
+                        "data": {"call_id": id, "from": von, "video": r.video},
+                    })]
+                }
+                Err(e) => vec![fehlerzeile(r.id, &e)],
+            }
+        }
+
+        // Die Gegenstelle hat abgehoben und zeigt ihr g_b.
+        P::Accepted(a) => {
+            let halter = lage.gespraech.lock().await;
+            let Some(g) = halter.as_ref() else {
+                return vec![];
+            };
+            match bestaetigen(&lage.client, g, &a.g_b).await {
+                Ok(_) => vec![json!({
+                    "event": "call_state",
+                    "data": {"call_id": a.id, "state": "accepted"},
+                })],
+                Err(e) => vec![fehlerzeile(a.id, &e)],
+            }
+        }
+
+        // Der Schluessel steht: ab hier redet der Ton.
+        P::Call(c) => {
+            let halter = lage.gespraech.lock().await;
+            let Some(g) = halter.as_ref() else {
+                return vec![];
+            };
+            // Der Anrufer kennt den Schluessel schon aus Schritt drei;
+            // der Angerufene bildet ihn jetzt -- und prueft dabei beides.
+            let schluessel = if g.ausgehend {
+                g.tausch.schluessel(&c.g_a_or_b).ok_or_else(|| "g_b unbrauchbar".to_string())
+            } else {
+                schluessel_vom_anrufer(g, &c.g_a_or_b, c.key_fingerprint)
+            };
+            let schluessel = match schluessel {
+                Ok(s) => s,
+                Err(e) => return vec![fehlerzeile(c.id, &e)],
+            };
+            let beschreibung = match uebergabe(g, &schluessel, c) {
+                Ok(v) => v,
+                Err(e) => return vec![fehlerzeile(c.id, &e)],
+            };
+            let zeichen = anruf::pruefzeichen_stellen(&schluessel, &c.g_a_or_b, 333);
+            an_den_ton(&json!({"befehl": "anrufen", "gespraech": beschreibung})).await;
+            vec![json!({
+                "event": "call_ready",
+                "data": {
+                    "call_id": c.id,
+                    "version": beschreibung["fassung"],
+                    "emoji_indices": zeichen,
+                },
+            })]
+        }
+
+        P::Discarded(d) => {
+            let mut halter = lage.gespraech.lock().await;
+            if halter.as_ref().map(|g| g.id) == Some(d.id) {
+                halter.take();
+            }
+            an_den_ton(&json!({"befehl": "auflegen", "id": d.id})).await;
+            vec![json!({
+                "event": "call_ended",
+                "data": {"call_id": d.id, "duration": d.duration.unwrap_or(0)},
+            })]
+        }
+
+        P::Empty(_) => vec![],
+    }
+}
+
+/// Ein Stueck Signalisierung fuer den Tonprozess.
+pub async fn signal_herein(lage: &Arc<Lage>, gespraech_id: i64, daten: &[u8]) {
+    if lage.gespraech.lock().await.as_ref().map(|g| g.id) != Some(gespraech_id) {
+        return;
+    }
+    an_den_ton(&json!({
+        "befehl": "signal",
+        "id": gespraech_id,
+        "daten": hex(daten),
+    }))
+    .await;
+}
+
+/// Der Rueckweg: was der Tonprozess der Gegenstelle sagen will.
+///
+/// Er kommt ueber denselben Befehlssocket herein wie alles andere --
+/// dann braucht es keinen zweiten Draht, und der Tonprozess spricht mit
+/// der Drahtpost genau eine Sprache.
+pub async fn signal_hinaus(lage: &Arc<Lage>, daten_hex: &str) -> Result<Value, String> {
+    let halter = lage.gespraech.lock().await;
+    let g = halter.as_ref().ok_or("kein Gespraech")?;
+    let daten = aus_hex(daten_hex)?;
+    signal_senden(&lage.client, g, daten).await?;
+    Ok(json!({"ok": true}))
+}
+
+fn aus_hex(s: &str) -> Result<Vec<u8>, String> {
+    if s.len() % 2 != 0 {
+        return Err("ungerade Laenge".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn fehlerzeile(id: i64, grund: &str) -> Value {
+    eprintln!("⚠ Anruf {id}: {grund}");
+    json!({"event": "call_failed", "data": {"call_id": id, "reason": grund}})
 }
