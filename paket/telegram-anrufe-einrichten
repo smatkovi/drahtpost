@@ -1,0 +1,96 @@
+#!/bin/sh
+# Legt das SIP-Konto an, ueber das Telegram-Anrufe in Harmattans eigener
+# Anrufansicht klingeln -- und entfernt es wieder.
+#
+#   telegram-anrufe-einrichten add      # bei der Installation
+#   telegram-anrufe-einrichten remove   # bei der Deinstallation
+#
+# Das Rezept stammt von harbour-whatsapp, wo es sich bewaehrt hat. Drei
+# Dinge, die man sich dort erarbeiten musste und hier nicht noch einmal
+# herausfinden muss:
+#
+# 1) Das SIP-Konto braucht eine Adresse, die wie eine Mailadresse aussieht:
+#    die Kontoverwaltung prueft das und nimmt weder einen nackten Namen
+#    noch eine IP. Daher telegram@telegram.local; das postinst zeigt den
+#    Namen ueber /etc/hosts auf die Loopback-Schnittstelle. Das Passwort
+#    ist beliebig -- die Bruecke nimmt jedes REGISTER an und lauscht nur
+#    lokal.
+#
+# 2) Port 5062, nicht 5060. Auf 5060 sitzt die WhatsApp-Bruecke. Zwei
+#    sofiasip-Konten mit verschiedenen Proxy-Ports koennen nebeneinander
+#    bestehen -- telepathy-sofiasip fuehrt dafuer zwei Verbindungen --,
+#    ein Port aber nicht zweimal.
+#
+# 3) ZWEI Kontospeicher. mc-tool schreibt nach ~/.rtcom-accounts/accounts.cfg,
+#    die Kontoverwaltung der Oberflaeche liest aber libaccounts
+#    (~/.accounts/accounts.db). Ein nur mit mc-tool angelegtes Konto laeuft
+#    zwar, steht in der Oberflaeche aber ohne Namen da.
+#
+# mc-tool spricht mit der Sitzung. Aus einem postinst heraus laeuft dieses
+# Skript als root und ohne Sitzungsbus -- beides wird hier nachgeholt,
+# sonst passiert schlicht nichts.
+set -e
+
+BEFEHL=${1:-add}
+KENNUNG=sofiasip/sip/telegram_40telegram
+
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ -f /tmp/session_bus_address.user ]; then
+    . /tmp/session_bus_address.user
+    export DBUS_SESSION_BUS_ADDRESS
+fi
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    echo "telegram-anrufe: kein Sitzungsbus - uebersprungen" >&2
+    exit 0
+fi
+
+konto_suchen() {
+    mc-tool list 2>/dev/null | grep "^$1" | head -n 1
+}
+
+case "$BEFEHL" in
+add)
+    KONTO=$(konto_suchen "$KENNUNG")
+    if [ -n "$KONTO" ]; then
+        # Bestehendes Konto nicht anfassen: hat der Nutzer es abgeschaltet,
+        # bleibt es abgeschaltet. Ein erneuter Lauf der Installation darf
+        # das nicht umwerfen.
+        echo "telegram-anrufe: SIP-Konto besteht schon ($KONTO)"
+        exit 0
+    fi
+    mc-tool add sofiasip/sip Telegram-Anrufe \
+        string:account=telegram@telegram.local \
+        string:auth-user=telegram \
+        string:password=telegram \
+        string:proxy-host=127.0.0.1 \
+        uint:port=5062 \
+        string:transport=udp \
+        bool:loose-routing=true \
+        string:keepalive-mechanism=options \
+        bool:discover-binding=false \
+        bool:discover-stun=false >/dev/null 2>&1 || true
+    KONTO=$(konto_suchen "$KENNUNG")
+    if [ -z "$KONTO" ]; then
+        echo "telegram-anrufe: SIP-Konto konnte nicht angelegt werden" >&2
+        exit 0
+    fi
+    mc-tool display "$KONTO" "Telegram-Anrufe" >/dev/null 2>&1 || true
+    mc-tool enable "$KONTO"                    >/dev/null 2>&1 || true
+    mc-tool auto-connect "$KONTO" on           >/dev/null 2>&1 || true
+    echo "telegram-anrufe: SIP-Konto $KONTO angelegt"
+    ;;
+
+remove)
+    # Nur das eigene -- deshalb der enge Namensvergleich.
+    KONTO=$(konto_suchen "$KENNUNG")
+    if [ -n "$KONTO" ]; then
+        mc-tool remove "$KONTO" >/dev/null 2>&1 || true
+        echo "telegram-anrufe: $KONTO entfernt"
+    fi
+    ;;
+
+*)
+    echo "Gebrauch: $0 [add|remove]" >&2
+    exit 1
+    ;;
+esac
+exit 0
